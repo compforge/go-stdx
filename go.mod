@@ -1,4 +1,4 @@
-module github.com/qiankunli/go-stdx
+module github.com/compforge/go-stdx
 
 go 1.25.0
 

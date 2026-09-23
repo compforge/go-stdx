@@ -30,10 +30,10 @@ Rules of the house:
 
 ```go
 import (
-	"github.com/qiankunli/go-stdx/osx"
-	"github.com/qiankunli/go-stdx/randx"
-	"github.com/qiankunli/go-stdx/slicesx"
-	"github.com/qiankunli/go-stdx/uuid"
+	"github.com/compforge/go-stdx/osx"
+	"github.com/compforge/go-stdx/randx"
+	"github.com/compforge/go-stdx/slicesx"
+	"github.com/compforge/go-stdx/uuid"
 )
 
 port := osx.EnvInt("APP_PORT", 8080)
