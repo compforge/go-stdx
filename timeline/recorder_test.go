@@ -136,8 +136,8 @@ type lostAcknowledgement struct {
 	once sync.Once
 }
 
-func (s *lostAcknowledgement) Append(ctx context.Context, id string, records []timeline.Record) error {
-	if err := s.Store.Append(ctx, id, records); err != nil {
+func (s *lostAcknowledgement) Merge(ctx context.Context, id string, update timeline.Update) error {
+	if err := s.Store.Merge(ctx, id, update); err != nil {
 		return err
 	}
 	var err error
@@ -161,25 +161,32 @@ func TestFlushRetriesAcceptedRecordsWithoutDuplicating(t *testing.T) {
 	if err != nil || len(snapshot.Stages) != 1 {
 		t.Fatalf("retry: %+v %v", snapshot, err)
 	}
-	records, _ := store.Read(ctx, "retry")
-	if len(records) != 4 {
-		t.Fatalf("retry produced %d records", len(records))
+	doc, _ := store.Read(ctx, "retry")
+	if len(doc.Stages) != 1 || doc.Revision != 2 {
+		t.Fatalf("retry: %+v", doc)
 	}
 	// Another coordinator cannot rewrite the accepted business outcome.
 	other := handle(t, "retry", store, "other")
 	got, err := other.Finish(ctx, errors.New("conflicting outcome"))
-	if !errors.Is(err, timeline.ErrRecordConflict) || got.Status != timeline.Succeeded {
+	if !errors.Is(err, timeline.ErrNotStarted) || got.Status != timeline.Succeeded {
 		t.Fatalf("terminal conflict: %+v %v", got, err)
 	}
 }
 
-func TestProjectIgnoresDelayedStageUpdates(t *testing.T) {
+func TestMergeIgnoresDelayedStageUpdates(t *testing.T) {
 	at := time.Now().UTC()
-	started := timeline.Record{ID: "begin", Kind: timeline.StageUpdated, Revision: 1, Stage: &timeline.StageRecord{ID: "s", StartedAt: at, Status: timeline.Running}}
-	ended := timeline.Record{ID: "end", Kind: timeline.StageUpdated, Revision: 2, Stage: &timeline.StageRecord{ID: "s", StartedAt: at, FinishedAt: at.Add(time.Second), Status: timeline.Succeeded}}
-	got := timeline.Project("operation", []timeline.Record{ended, started, ended}, at.Add(time.Minute))
+	started := timeline.StageRecord{ID: "s", Revision: 1, StartedAt: at, Status: timeline.Running}
+	ended := started
+	ended.Revision, ended.FinishedAt, ended.Status = 2, at.Add(time.Second), timeline.Succeeded
+	store := timeline.NewMemoryStore()
+	for _, stage := range []timeline.StageRecord{ended, started, ended} {
+		if err := store.Merge(context.Background(), "operation", timeline.Update{Stages: []timeline.StageRecord{stage}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, _ := store.Read(context.Background(), "operation")
 	if len(got.Stages) != 1 || got.Stages[0].Status != timeline.Succeeded {
-		t.Fatalf("out-of-order replay: %+v", got)
+		t.Fatalf("out-of-order: %+v", got)
 	}
 }
 
@@ -187,6 +194,9 @@ func TestSharedSnapshotOwnershipAndEncodingFailure(t *testing.T) {
 	ctx := context.Background()
 	store := timeline.NewMemoryStore()
 	tl := handle(t, "json", store, "worker")
+	if err := tl.Start(ctx, "start"); err != nil {
+		t.Fatal(err)
+	}
 	input := map[string]any{"large": uint64(math.MaxUint64), "name": "before"}
 	_, stage := tl.Begin(ctx, "work", timeline.Field{Key: "input", Value: input})
 	input["name"] = "after"
@@ -236,11 +246,11 @@ type blockedStore struct {
 	unblock chan struct{}
 }
 
-func (s *blockedStore) Append(ctx context.Context, id string, records []timeline.Record) error {
+func (s *blockedStore) Merge(ctx context.Context, id string, update timeline.Update) error {
 	close(s.entered)
 	select {
 	case <-s.unblock:
-		return s.Store.Append(ctx, id, records)
+		return s.Store.Merge(ctx, id, update)
 	case <-ctx.Done():
 		return ctx.Err()
 	}

@@ -1,76 +1,99 @@
-// Package sqlstore persists timeline observations using an application-owned
-// database/sql pool. It uses ? bind parameters (MySQL, SQLite and DM-style
-// drivers); it does not open pools, create schemas or close the supplied DB.
+// Package sqlstore persists one document per timeline using an application-owned
+// database/sql pool. It uses ? bind parameters and does not manage schema or GC.
 package sqlstore
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/compforge/go-stdx/timeline"
 )
 
-// Store uses timeline_records(record_seq, timeline_id, record_id, payload).
-// record_seq must be database-generated and ordered; (timeline_id, record_id)
-// must have a unique constraint. See docs/timeline.md for schema and retention.
+// Store uses timelines(id, payload, version, created_at, updated_at). id is the
+// primary key; version is incremented on every accepted change. JSON merging is
+// done in Go, so backends need no vendor-specific JSON update expressions.
 type Store struct{ db *sql.DB }
 
 func New(db *sql.DB) *Store { return &Store{db: db} }
 
-func (s *Store) Append(ctx context.Context, id string, records []timeline.Record) error {
-	for _, record := range records {
-		payload, err := json.Marshal(record)
-		if err != nil {
-			return fmt.Errorf("encode timeline record: %w", err)
-		}
-		_, insertErr := s.db.ExecContext(ctx,
-			"INSERT INTO timeline_records (timeline_id, record_id, payload) VALUES (?, ?, ?)",
-			id, record.ID, string(payload))
-		if insertErr == nil {
-			continue
-		}
-		// A commit may have succeeded even if its acknowledgement was lost. Read
-		// back the exact idempotency key rather than relying on dialect error codes.
-		var existing []byte
-		readErr := s.db.QueryRowContext(ctx,
-			"SELECT payload FROM timeline_records WHERE timeline_id = ? AND record_id = ?",
-			id, record.ID).Scan(&existing)
-		if readErr != nil {
-			return errors.Join(insertErr, readErr)
-		}
-		if !bytes.Equal(existing, payload) {
-			return timeline.ErrRecordConflict
-		}
+func (s *Store) load(ctx context.Context, id string) (timeline.Document, uint64, error) {
+	var raw []byte
+	var version uint64
+	err := s.db.QueryRowContext(ctx, "SELECT payload, version FROM timelines WHERE id = ?", id).Scan(&raw, &version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return timeline.Document{}, 0, timeline.ErrNotFound
 	}
-	return nil
+	if err != nil {
+		return timeline.Document{}, 0, err
+	}
+	var doc timeline.Document
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return doc, 0, fmt.Errorf("decode timeline %s: %w", id, err)
+	}
+	return doc, version, nil
+}
+func (s *Store) Read(ctx context.Context, id string) (timeline.Document, error) {
+	doc, _, err := s.load(ctx, id)
+	return doc, err
 }
 
-func (s *Store) Read(ctx context.Context, id string) ([]timeline.Record, error) {
-	// A single statement obtains one database read view. Do not page without a
-	// read transaction: pages could mix different snapshots under concurrent IO.
-	rows, err := s.db.QueryContext(ctx,
-		"SELECT payload FROM timeline_records WHERE timeline_id = ? ORDER BY record_seq", id)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var records []timeline.Record
-	for rows.Next() {
-		var payload []byte
-		if err := rows.Scan(&payload); err != nil {
-			return records, err
+// Merge retries only confirmed version races. An ambiguous commit returns an
+// error; retrying the same update is safe even if the first commit succeeded.
+func (s *Store) Merge(ctx context.Context, id string, update timeline.Update) error {
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		var record timeline.Record
-		if err := json.Unmarshal(payload, &record); err != nil {
-			return records, fmt.Errorf("decode timeline record: %w", err)
+		current, version, err := s.load(ctx, id)
+		if err != nil && !errors.Is(err, timeline.ErrNotFound) {
+			return err
 		}
-		records = append(records, record)
+		next, changed, err := timeline.MergeDocument(id, current, update)
+		if err != nil || !changed {
+			return err
+		}
+		raw, err := json.Marshal(next)
+		if err != nil {
+			return fmt.Errorf("encode timeline %s: %w", id, err)
+		}
+		now := time.Now().UTC()
+		if version == 0 {
+			_, err = s.db.ExecContext(ctx, "INSERT INTO timelines (id, payload, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", id, string(raw), 1, now, now)
+			if err == nil {
+				return nil
+			}
+			// Detect competing insertion without depending on vendor error codes.
+			_, observed, readErr := s.load(ctx, id)
+			if readErr != nil || observed == 0 {
+				return errors.Join(err, readErr)
+			}
+		} else {
+			result, err := s.db.ExecContext(ctx, "UPDATE timelines SET payload = ?, version = ?, updated_at = ? WHERE id = ? AND version = ?", string(raw), version+1, now, id, version)
+			if err != nil {
+				return err
+			}
+			rows, err := result.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if rows == 1 {
+				return nil
+			}
+		}
+		// Bounded backoff avoids a hot spin while preserving the caller's deadline.
+		delay := time.Duration(1<<min(attempt, 5)) * time.Millisecond
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
-	return records, rows.Err()
 }
 
 var _ timeline.Store = (*Store)(nil)

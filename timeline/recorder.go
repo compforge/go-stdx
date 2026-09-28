@@ -28,7 +28,8 @@ type Recorder struct {
 	actor     Actor
 	mu        sync.Mutex
 	flushGate chan struct{}
-	pending   []Record
+	pending   []Update
+	operation OperationRecord
 	fieldErr  error
 	started   bool
 	finished  bool
@@ -54,7 +55,7 @@ func New(id string, options ...Option) (*Recorder, error) {
 func (t *Recorder) ID() string { return t.id }
 
 // Start records the operation boundary and flushes it. Calling Start on another
-// handle never resets existing records: the first accepted start wins. Retry a
+// handle never resets the document: a different start boundary conflicts. Retry a
 // failed flush with Flush; do not invent a second business start timestamp.
 func (t *Recorder) Start(ctx context.Context, operation string, fields ...Field) error {
 	t.mu.Lock()
@@ -63,8 +64,8 @@ func (t *Recorder) Start(ctx context.Context, operation string, fields ...Field)
 		return ErrAlreadyStarted
 	}
 	t.started = true
-	t.pending = append(t.pending, Record{ID: "operation:start", Kind: OperationStarted,
-		At: time.Now().UTC(), Operation: operation, Fields: t.encode(fields)})
+	t.operation = OperationRecord{Revision: 1, StartedAt: time.Now().UTC(), Operation: operation, Status: Running, Fields: t.encode(fields)}
+	t.enqueueOperation()
 	t.mu.Unlock()
 	return t.Flush(ctx)
 }
@@ -111,24 +112,30 @@ func (t *Recorder) Begin(ctx context.Context, name string, fields ...Field) (con
 func (t *Recorder) SetFields(fields ...Field) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.pending = append(t.pending, Record{ID: uuid.NewString(), Kind: OperationFields,
-		At: time.Now().UTC(), Fields: t.encode(fields)})
+	if !t.started {
+		t.fieldErr = errors.Join(t.fieldErr, ErrNotStarted)
+		return
+	}
+	if t.finished {
+		return
+	}
+	t.operation.Fields = mergeFields(t.operation.Fields, t.encode(fields))
+	t.operation.Revision++
+	t.enqueueOperation()
 }
 
 type recordedStage struct {
-	owner    *Recorder
-	record   StageRecord
-	started  time.Time // retains the monotonic clock for the measured duration
-	revision uint64
-	ended    bool
+	owner   *Recorder
+	record  StageRecord
+	started time.Time // retains the monotonic clock for the measured duration
+	ended   bool
 }
 
 func (s *recordedStage) enqueue() {
-	s.revision++
+	s.record.Revision++
 	record := s.record
 	record.Fields = cloneJSONFields(record.Fields)
-	s.owner.pending = append(s.owner.pending, Record{ID: uuid.NewString(), Kind: StageUpdated,
-		At: time.Now().UTC(), Stage: &record, Revision: s.revision})
+	s.owner.pending = append(s.owner.pending, Update{Stages: []StageRecord{record}})
 }
 
 func (s *recordedStage) SetFields(fields ...Field) {
@@ -197,7 +204,7 @@ func mergeFields(dst, src map[string]json.RawMessage) map[string]json.RawMessage
 }
 
 // Flush acknowledges records buffered before this call acquired the flush lock.
-// A failed/ambiguous append retains identical record IDs for a safe retry.
+// A failed/ambiguous merge retains identical revisions for a safe retry.
 // It cannot flush buffers owned by another handle or process.
 func (t *Recorder) Flush(ctx context.Context) error {
 	select {
@@ -210,42 +217,71 @@ func (t *Recorder) Flush(ctx context.Context) error {
 		return err
 	}
 	t.mu.Lock()
-	records := append([]Record(nil), t.pending...)
+	updates := append([]Update(nil), t.pending...)
 	fieldErr := t.fieldErr
 	t.mu.Unlock()
-	if len(records) == 0 {
+	if len(updates) == 0 {
 		return fieldErr
 	}
-	if err := t.store.Append(ctx, t.id, records); err != nil {
+	// Coalesce intermediate states before IO; only latest revisions are durable.
+	update := Update{}
+	stages := make(map[StageID]StageRecord)
+	for _, pending := range updates {
+		if pending.Operation != nil {
+			update.Operation = pending.Operation
+		}
+		for _, stage := range pending.Stages {
+			stages[stage.ID] = stage
+		}
+	}
+	for _, stage := range stages {
+		update.Stages = append(update.Stages, stage)
+	}
+	if err := t.store.Merge(ctx, t.id, update); err != nil {
 		return errors.Join(err, fieldErr)
 	}
 	t.mu.Lock()
-	t.pending = append([]Record(nil), t.pending[len(records):]...)
+	t.pending = append([]Update(nil), t.pending[len(updates):]...)
 	t.mu.Unlock()
 	return fieldErr
 }
 
 func (t *Recorder) Snapshot(ctx context.Context) (Snapshot, error) {
 	flushErr := t.Flush(ctx)
-	records, readErr := t.store.Read(ctx, t.id)
-	snapshot := Project(t.id, records, time.Now().UTC())
+	doc, readErr := t.store.Read(ctx, t.id)
+	if doc.ID == "" {
+		doc.ID, doc.RootStageID = t.id, rootID(t.id)
+	}
+	snapshot := doc.Snapshot(time.Now().UTC())
 	snapshot.Collection = Collection{LocalFlushed: flushErr == nil, StoreRead: readErr == nil}
 	return snapshot, errors.Join(flushErr, readErr)
 }
 
 // Finish records the business result once on this handle and returns the current
-// shared snapshot. The first terminal record accepted by Store wins globally.
+// shared snapshot. Only the handle that called Start may finish; accepted boundaries are immutable.
 // It does not terminate stages, reject late observations, or close shared IO.
 func (t *Recorder) Finish(ctx context.Context, operationErr error) (Snapshot, error) {
 	t.mu.Lock()
+	if !t.started {
+		t.mu.Unlock()
+		snapshot, err := t.Snapshot(ctx)
+		return snapshot, errors.Join(ErrNotStarted, err)
+	}
 	if !t.finished {
 		t.finished = true
-		status, message := result(operationErr)
-		t.pending = append(t.pending, Record{ID: "operation:finish", Kind: OperationFinished,
-			At: time.Now().UTC(), Status: status, Error: message})
+		t.operation.Revision++
+		t.operation.FinishedAt = time.Now().UTC()
+		t.operation.Status, t.operation.Error = result(operationErr)
+		t.enqueueOperation()
 	}
 	t.mu.Unlock()
 	return t.Snapshot(ctx)
+}
+
+func (t *Recorder) enqueueOperation() {
+	operation := t.operation
+	operation.Fields = cloneJSONFields(operation.Fields)
+	t.pending = append(t.pending, Update{Operation: &operation})
 }
 
 var _ Timeline = (*Recorder)(nil)

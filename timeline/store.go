@@ -1,6 +1,7 @@
 package timeline
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,116 +10,185 @@ import (
 	"time"
 )
 
-// Actor identifies the executor of a stage. Callers choose the identity domain:
-// for example a Pod UID and name, a worker ID, or a service instance.
-// Actor identifies the executor, not the authenticated user requesting work.
+// Actor optionally identifies the executor, not the requesting user.
+// The caller chooses the identity domain; ID and Name are independently optional.
 type Actor struct {
 	ID   string `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
 }
 
-// Record is an immutable observation. ID is the idempotency key for transport
-// retries. Stage updates contain the entire stage at Revision, not a patch.
-// Operation start/finish are emitted only by the business coordinator.
-type Record struct {
-	ID        string                     `json:"id"`
-	Kind      RecordKind                 `json:"kind"`
-	At        time.Time                  `json:"at"`
-	Operation string                     `json:"operation,omitempty"`
-	Status    Status                     `json:"status,omitempty"`
-	Error     string                     `json:"error,omitempty"`
-	Fields    map[string]json.RawMessage `json:"fields,omitempty"`
-	Stage     *StageRecord               `json:"stage,omitempty"`
-	Revision  uint64                     `json:"revision,omitempty"`
-}
-
-type RecordKind string
-
-const (
-	OperationStarted  RecordKind = "operation_started"
-	OperationFields   RecordKind = "operation_fields"
-	OperationFinished RecordKind = "operation_finished"
-	StageUpdated      RecordKind = "stage_updated"
-)
-
-var ErrRecordConflict = errors.New("timeline: record ID reused with different content")
+var ErrConflict = errors.New("timeline: conflicting revision or immutable boundary")
 var ErrAlreadyStarted = errors.New("timeline: operation already started on this handle")
+var ErrNotStarted = errors.New("timeline: only the started coordinator may update the operation")
+var ErrNotFound = errors.New("timeline: document not found")
 
-// Store is shared by all handles of an operation, potentially in different
-// processes. Implementations must support concurrent callers.
-//
-// Append acknowledges durable acceptance for persistent stores. A retry with
-// the same timeline ID, record ID and content is a no-op; different content
-// returns ErrRecordConflict. On error some records may have been accepted.
-// Read returns a consistent, detached view in backend-defined stable order, with
-// duplicate deliveries removed. This is a read boundary, not a distributed
-// completion barrier. Implementations must respect context cancellation.
-//
-// Store connections and record retention are owned by the application. Ending
-// an operation never closes the store or prevents late stage updates.
+// OperationRecord is the coordinator's latest state. StartedAt and Operation
+// identify its immutable start; Revision orders full-state updates from that owner.
+type OperationRecord struct {
+	Revision   uint64                     `json:"revision"`
+	Operation  string                     `json:"operation"`
+	StartedAt  time.Time                  `json:"started_at"`
+	FinishedAt time.Time                  `json:"finished_at,omitempty"`
+	Status     Status                     `json:"status"`
+	Error      string                     `json:"error,omitempty"`
+	Fields     map[string]json.RawMessage `json:"fields,omitempty"`
+}
+
+// Document is the durable, current state of one timeline, without read-time
+// collection metadata. It retains one state per stage, not an event history.
+type Document struct {
+	ID          string  `json:"id"`
+	RootStageID StageID `json:"root_stage_id"`
+	OperationRecord
+	Stages []StageRecord `json:"stages,omitempty"`
+}
+
+// Update contains only this writer's changes. Each value is a complete state
+// at its revision. Only the coordinator writes Operation; stage owners write Stages.
+type Update struct {
+	Operation *OperationRecord
+	Stages    []StageRecord
+}
+
+// Store atomically merges updates into one document per ID. Older revisions are
+// ignored; equal revisions with different content and changed immutable boundaries
+// return ErrConflict. On error acceptance may be uncertain, so retry the same update.
+// Read returns detached data or ErrNotFound. Implementations support concurrent
+// callers and cancellation. Connections, schema and retention belong to the caller.
 type Store interface {
-	Append(context.Context, string, []Record) error
-	Read(context.Context, string) ([]Record, error)
+	Merge(context.Context, string, Update) error
+	Read(context.Context, string) (Document, error)
 }
 
-// MemoryStore collects records within one process. Share the same instance to
-// join handles; use a persistent Store for independent processes.
+// MemoryStore shares documents among handles in one process.
 type MemoryStore struct {
-	mu      sync.Mutex
-	records map[string][]Record
-	ids     map[string]map[string]Record
+	mu        sync.Mutex
+	documents map[string]Document
 }
 
-func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{records: make(map[string][]Record), ids: make(map[string]map[string]Record)}
-}
-
-func (s *MemoryStore) Append(ctx context.Context, id string, records []Record) error {
+func NewMemoryStore() *MemoryStore { return &MemoryStore{documents: make(map[string]Document)} }
+func (s *MemoryStore) Merge(ctx context.Context, id string, update Update) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if s.ids[id] == nil {
-		s.ids[id] = make(map[string]Record)
+	doc, _, err := MergeDocument(id, s.documents[id], update)
+	if err == nil {
+		s.documents[id] = doc
 	}
-	for _, record := range records {
-		if previous, ok := s.ids[id][record.ID]; ok {
-			if !reflect.DeepEqual(previous, record) {
-				return ErrRecordConflict
-			}
-			continue
-		}
-		record = cloneRecord(record)
-		s.ids[id][record.ID] = record
-		s.records[id] = append(s.records[id], record)
-	}
-	return nil
+	return err
 }
-
-func (s *MemoryStore) Read(ctx context.Context, id string) ([]Record, error) {
+func (s *MemoryStore) Read(ctx context.Context, id string) (Document, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return Document{}, err
 	}
-	result := make([]Record, len(s.records[id]))
-	for i, record := range s.records[id] {
-		result[i] = cloneRecord(record)
+	doc, ok := s.documents[id]
+	if !ok {
+		return Document{}, ErrNotFound
 	}
-	return result, nil
+	return cloneDocument(doc), nil
 }
 
-func cloneRecord(record Record) Record {
-	record.Fields = cloneJSONFields(record.Fields)
-	if record.Stage != nil {
-		stage := *record.Stage
-		stage.Fields = cloneJSONFields(stage.Fields)
-		record.Stage = &stage
+// MergeDocument is the shared merge contract for storage implementations. It
+// never mutates its inputs. A conflict rejects the entire update. changed=false
+// lets durable stores acknowledge duplicate delivery without rewriting the row.
+func MergeDocument(id string, current Document, update Update) (doc Document, changed bool, err error) {
+	if id == "" {
+		return Document{}, false, ErrEmptyID
 	}
-	return record
+	if current.ID != "" && current.ID != id {
+		return Document{}, false, ErrConflict
+	}
+	doc = cloneDocument(current)
+	doc.ID, doc.RootStageID = id, rootID(id)
+	if incoming := update.Operation; incoming != nil {
+		old := doc.OperationRecord
+		if incoming.Revision == 0 || incoming.StartedAt.IsZero() {
+			return Document{}, false, ErrConflict
+		}
+		if old.Revision != 0 && (old.Operation != incoming.Operation || !old.StartedAt.Equal(incoming.StartedAt)) {
+			return Document{}, false, ErrConflict
+		}
+		if incoming.Revision == old.Revision && !sameJSON(old, *incoming) {
+			return Document{}, false, ErrConflict
+		}
+		if incoming.Revision > old.Revision {
+			// A higher revision cannot reopen or replace an accepted business terminal.
+			if !old.FinishedAt.IsZero() && !sameJSON(old, *incoming) {
+				return Document{}, false, ErrConflict
+			}
+			doc.OperationRecord = *incoming
+			doc.Fields = cloneJSONFields(incoming.Fields)
+			changed = true
+		}
+	}
+	indexes := make(map[StageID]int, len(doc.Stages))
+	for i, stage := range doc.Stages {
+		indexes[stage.ID] = i
+	}
+	for _, incoming := range update.Stages {
+		if incoming.ID == "" || incoming.Revision == 0 || incoming.StartedAt.IsZero() {
+			return Document{}, false, ErrConflict
+		}
+		if i, ok := indexes[incoming.ID]; ok {
+			old := doc.Stages[i]
+			if old.ParentID != incoming.ParentID || old.Name != incoming.Name || old.Actor != incoming.Actor || !old.StartedAt.Equal(incoming.StartedAt) {
+				return Document{}, false, ErrConflict
+			}
+			if incoming.Revision < old.Revision {
+				continue
+			}
+			if incoming.Revision == old.Revision {
+				if !sameJSON(old, incoming) {
+					return Document{}, false, ErrConflict
+				}
+				continue
+			}
+			if !old.FinishedAt.IsZero() {
+				return Document{}, false, ErrConflict
+			}
+			incoming.Fields = cloneJSONFields(incoming.Fields)
+			doc.Stages[i] = incoming
+		} else {
+			incoming.Fields = cloneJSONFields(incoming.Fields)
+			indexes[incoming.ID] = len(doc.Stages)
+			doc.Stages = append(doc.Stages, incoming)
+		}
+		changed = true
+	}
+	sortStages(doc.Stages)
+	return doc, changed, nil
 }
 
+// SQL JSON types may normalize whitespace and object key order. Compare decoded
+// JSON with Number so retries neither conflict on formatting nor round large ints.
+func sameJSON(a, b any) bool {
+	decode := func(v any) any {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return nil
+		}
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		var out any
+		if decoder.Decode(&out) != nil {
+			return nil
+		}
+		return out
+	}
+	return reflect.DeepEqual(decode(a), decode(b))
+}
+func cloneDocument(doc Document) Document {
+	doc.Fields = cloneJSONFields(doc.Fields)
+	doc.Stages = append([]StageRecord(nil), doc.Stages...)
+	for i := range doc.Stages {
+		doc.Stages[i].Fields = cloneJSONFields(doc.Stages[i].Fields)
+	}
+	return doc
+}
 func cloneJSONFields(fields map[string]json.RawMessage) map[string]json.RawMessage {
 	if fields == nil {
 		return nil
