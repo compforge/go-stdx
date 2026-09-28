@@ -59,15 +59,29 @@ Registry 的唯一性范围是一个共享实例。跨进程和跨副本的记�
 ## 快照与事件汇总
 
 gospan 的 span 事件是阶段事实的来源，内存投影保存阶段关系、区间、属性和结果。
-Snapshot 是可独立修改的值视图；字段切片会复制，属性中的引用值要求调用方保持只读。
+Snapshot 是可独立修改、直接 JSON 序列化的数据结构，业务响应和数据库 JSON 列可直接
+引用它，无需再定义一套快照 DTO。记录接口接收 `Field`；记录调用返回前，属性已编码为
+`map[string]json.RawMessage` 的 JSON 数据，后续修改输入的 map/slice 不影响已记录事实。
+同名属性以后一次记录为准。快照复制属性 map 及 JSON 字节，修改某次快照不会影响 recorder 或其它快照。
+属性遵循 `encoding/json` 的编码规则；读取统一用 `FieldValue[T]` 解码，落库前后行为
+一致，整型不会先经过 float64 而丢失精度。自定义 Go 类型的恢复由 caller 选择的 T 决定。
 `Snapshot.ID` 与 `Timeline.ID()` 一致，即使尚未收集到任何阶段事件也保留该标识。
 `RootStageID` 表示内部根节点，`StageRecord.ID / ParentID` 表示阶段树关系。
 阶段按开始时间排列，同一开始时间用 StageID 排序。StageID 仅在一次 Timeline 内有效。
 
 `Snapshot` 在事件队列中放入私有检查点，等待投影消费到该位置。因此成功的快照包含
 调用前已经完成的记录，也可能包含并发产生的后续记录，不承诺调用瞬间的隔离视图。
-`Complete` 表示此前记录已经收齐，与操作是否结束无关。等待采集超时时返回已有事实、
+`Complete` 表示此前记录已经收齐且字段可编码，与操作是否结束无关。等待采集超时时返回已有事实、
 `Complete=false` 和 context 错误，调用方可保留快照并稍后重试。
+
+不可编码字段在创建时返回 `ErrInvalidField`；创建后的记录方法会跳过该字段，保留首个
+编码错误，由后续 `Snapshot` / `Finish` 返回，且 `Complete=false`。有效字段与阶段
+仍保留，业务结果仍独立记录，`Finish` 仍释放资源；后续写入无法弥补已丢失的观测。
+
+持久化使用标准 `json.Marshal` / `json.Unmarshal`，没有 backend 类型或运行句柄。
+时间使用 RFC 3339 JSON 字符串；尚未结束的 `FinishedAt` 为零时间，运行阶段耗时按
+快照 `CapturedAt` 计算，完成后的快照固定捕获时间。并行阶段始终保留各自区间和父子
+ID，不能把阶段耗时求和作为总耗时。
 
 writer 只执行内存投影，不调用数据库、日志导出器或用户回调。有界事件队列使用阻塞
 策略，避免丢失开始或结束事件破坏树结构。context 限制检查点消费和关闭的等待时间，

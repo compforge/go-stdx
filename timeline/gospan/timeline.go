@@ -4,7 +4,9 @@ package gospantimeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 
@@ -20,6 +22,7 @@ type recorder struct {
 	sink     *projection
 	active   int
 	sequence uint64
+	fieldErr error // first encoding error; lost input keeps subsequent snapshots incomplete
 	finished bool
 }
 
@@ -46,6 +49,10 @@ func New(_ context.Context, id, operation string, fields ...timeline.Field) (tim
 	if id == "" {
 		return nil, timeline.ErrEmptyID
 	}
+	initialAttrs, err := attrs(fields)
+	if err != nil {
+		return nil, err
+	}
 	sink := newProjection(id)
 	// This writer only projects into memory. Blocking on its bounded queue
 	// preserves stage boundaries without coupling producers to external IO.
@@ -54,7 +61,7 @@ func New(_ context.Context, id, operation string, fields ...timeline.Field) (tim
 		return nil, err
 	}
 	// Span IDs are local to a tracer. Never inherit a foreign gospan parent.
-	rootCtx, root := tracer.Start(context.Background(), operation, attrs(fields)...)
+	rootCtx, root := tracer.Start(context.Background(), operation, initialAttrs...)
 	t := &recorder{tracer: tracer, root: root, rootCtx: rootCtx, sink: sink}
 	return t, nil
 }
@@ -75,7 +82,7 @@ func (t *recorder) Begin(ctx context.Context, name string, fields ...timeline.Fi
 	if p, ok := ctx.Value(parentKey{}).(parent); ok && p.owner == t {
 		spanCtx = p.spanCtx
 	}
-	spanCtx, span := t.tracer.Start(spanCtx, name, attrs(fields)...)
+	spanCtx, span := t.tracer.Start(spanCtx, name, t.attrs(fields)...)
 	t.active++
 	return t.context(ctx, spanCtx), &stage{owner: t, span: span}
 }
@@ -84,7 +91,7 @@ func (t *recorder) SetFields(fields ...timeline.Field) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if !t.finished {
-		t.root.SetAttrs(attrs(fields)...)
+		t.root.SetAttrs(t.attrs(fields)...)
 	}
 }
 
@@ -92,7 +99,7 @@ func (s *stage) SetFields(fields ...timeline.Field) {
 	s.owner.mu.Lock()
 	defer s.owner.mu.Unlock()
 	if !s.ended {
-		s.span.SetAttrs(attrs(fields)...)
+		s.span.SetAttrs(s.owner.attrs(fields)...)
 	}
 }
 
@@ -102,7 +109,7 @@ func (s *stage) End(err error, fields ...timeline.Field) {
 	if s.ended {
 		return
 	}
-	s.span.SetAttrs(attrs(fields)...)
+	s.span.SetAttrs(s.owner.attrs(fields)...)
 	s.span.Fail(err)
 	s.span.End()
 	s.ended = true
@@ -122,7 +129,7 @@ func (t *recorder) Snapshot(ctx context.Context) (timeline.Snapshot, error) {
 	t.root.SetAttrs(slog.Any(checkpointKey, checkpoint{sequence: seq}))
 	t.mu.Unlock()
 	err := t.sink.wait(ctx, seq)
-	return t.sink.snapshot(err == nil), err
+	return t.snapshot(err)
 }
 
 func (t *recorder) Finish(ctx context.Context, operationErr error) (timeline.Snapshot, error) {
@@ -148,21 +155,47 @@ func (t *recorder) closedSnapshot(ctx context.Context) (timeline.Snapshot, error
 	// Close initiates shutdown even if ctx expires. The writer drains in the
 	// background; another Finish/Snapshot can await the same terminal result.
 	err := t.tracer.Close(ctx)
+	return t.snapshot(err)
+}
+
+// snapshot combines transport collection and field encoding failures without
+// changing the operation result. Invalid observations must not look complete.
+func (t *recorder) snapshot(collectionErr error) (timeline.Snapshot, error) {
+	t.mu.Lock()
+	err := errors.Join(collectionErr, t.fieldErr)
+	t.mu.Unlock()
 	return t.sink.snapshot(err == nil), err
 }
 
-func attrs(fields []timeline.Field) []slog.Attr {
-	result := make([]slog.Attr, len(fields))
-	for i, field := range fields {
-		// Keep caller value types (slog otherwise normalizes int to int64).
-		result[i] = slog.Any(field.Key, fieldValue{value: field.Value})
+// Caller holds mu; encoding happens before events are queued so later caller
+// mutations cannot change recorded values or race with the projection writer.
+func (t *recorder) attrs(fields []timeline.Field) []slog.Attr {
+	result, err := attrs(fields)
+	if t.fieldErr == nil {
+		t.fieldErr = err
 	}
 	return result
 }
 
+func attrs(fields []timeline.Field) ([]slog.Attr, error) {
+	result := make([]slog.Attr, 0, len(fields))
+	var firstErr error
+	for _, field := range fields {
+		data, err := json.Marshal(field.Value)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%w: %q: %v", timeline.ErrInvalidField, field.Key, err)
+			}
+			continue
+		}
+		result = append(result, slog.Any(field.Key, fieldValue{value: data}))
+	}
+	return result, firstErr
+}
+
 type inertStage struct{}
 
-type fieldValue struct{ value any }
+type fieldValue struct{ value json.RawMessage }
 
 func (inertStage) SetFields(...timeline.Field)  {}
 func (inertStage) End(error, ...timeline.Field) {}

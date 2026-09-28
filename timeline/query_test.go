@@ -2,6 +2,7 @@ package timeline_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"sync"
@@ -33,7 +34,7 @@ func TestSnapshotQueriesPreserveParallelFacts(t *testing.T) {
 }
 
 func TestFieldValueLastValueAndType(t *testing.T) {
-	fields := []timeline.Field{{Key: "key", Value: "old"}, {Key: "key", Value: 42}}
+	fields := map[string]json.RawMessage{"key": json.RawMessage(`42`)}
 	if v, ok := timeline.FieldValue[int](fields, "key"); !ok || v != 42 {
 		t.Fatalf("value=%v ok=%v", v, ok)
 	}

@@ -92,14 +92,14 @@ func TestStageResultsAndDetachedFields(t *testing.T) {
 	if final.Stages[0].Status != timeline.Failed || final.Stages[0].Error != failure.Error() || final.Stages[1].Status != timeline.Canceled {
 		t.Fatalf("lost stage result: %+v", final.Stages)
 	}
-	if before.Stages[0].Fields[0].Value != 2 || final.Stages[0].Fields[0].Value != 2 || final.Fields[0].Value != 1 {
-		t.Fatal("field values changed or their Go types were normalized")
+	if string(before.Stages[0].Fields["count"]) != "2" || string(final.Stages[0].Fields["count"]) != "2" || string(final.Fields["attempt"]) != "1" {
+		t.Fatal("recorded field values changed")
 	}
-	final.Fields[0].Value = 44
-	final.Stages[0].Fields[0].Value = 55
+	final.Fields["attempt"][0] = '4'
+	final.Stages[0].Fields["count"][0] = '5'
 	final.Stages[0].Name = "changed"
 	fresh := snapshot(t, tl)
-	if fresh.Fields[0].Value != 1 || fresh.Stages[0].Fields[0].Value != 2 || fresh.Stages[0].Name != "failed" {
+	if string(fresh.Fields["attempt"]) != "1" || string(fresh.Stages[0].Fields["count"]) != "2" || fresh.Stages[0].Name != "failed" {
 		t.Fatal("caller mutation reached retained records")
 	}
 }

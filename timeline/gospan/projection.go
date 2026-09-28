@@ -3,6 +3,7 @@ package gospantimeline
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"slices"
 	"sync"
 	"time"
@@ -67,13 +68,10 @@ func (p *projection) WriteBatch(batch gospan.Batch) error {
 				continue
 			}
 			value := attr.Value.Any().(fieldValue)
-			field := timeline.Field{Key: attr.Key, Value: value.value}
-			index := slices.IndexFunc(record.Fields, func(f timeline.Field) bool { return f.Key == field.Key })
-			if index < 0 {
-				record.Fields = append(record.Fields, field)
-			} else {
-				record.Fields[index] = field
+			if record.Fields == nil {
+				record.Fields = make(map[string]json.RawMessage)
 			}
+			record.Fields[attr.Key] = value.value
 		}
 	}
 	close(p.changed)
@@ -108,7 +106,7 @@ func (p *projection) snapshot(complete bool) timeline.Snapshot {
 		result.RootStageID, result.Operation = root.ID, root.Name
 		result.StartedAt, result.FinishedAt = root.StartedAt, root.FinishedAt
 		result.Status, result.Error = root.Status, root.Error
-		result.Fields = slices.Clone(root.Fields)
+		result.Fields = cloneFields(root.Fields)
 		if complete && !root.FinishedAt.IsZero() {
 			result.CapturedAt = root.FinishedAt
 		}
@@ -118,7 +116,7 @@ func (p *projection) snapshot(complete bool) timeline.Snapshot {
 			continue
 		}
 		stage := *record
-		stage.Fields = slices.Clone(record.Fields)
+		stage.Fields = cloneFields(record.Fields)
 		result.Stages = append(result.Stages, stage)
 	}
 	slices.SortFunc(result.Stages, func(a, b timeline.StageRecord) int {
@@ -127,5 +125,18 @@ func (p *projection) snapshot(complete bool) timeline.Snapshot {
 		}
 		return cmp.Compare(a.ID, b.ID)
 	})
+	return result
+}
+
+// JSON bytes must be copied too: modifying an exported snapshot cannot alter
+// the projection or another snapshot while other goroutines are recording.
+func cloneFields(fields map[string]json.RawMessage) map[string]json.RawMessage {
+	if fields == nil {
+		return nil
+	}
+	result := make(map[string]json.RawMessage, len(fields))
+	for key, value := range fields {
+		result[key] = slices.Clone(value)
+	}
 	return result
 }
