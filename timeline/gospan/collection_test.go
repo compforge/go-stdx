@@ -52,7 +52,7 @@ func TestCollectionDeadlineAndFinishRetry(t *testing.T) {
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	partial, err := tl.Snapshot(canceled)
-	if !errors.Is(err, context.Canceled) || partial.Complete || partial.ID != tl.ID() {
+	if !errors.Is(err, context.Canceled) || (partial.Collection.LocalFlushed && partial.Collection.StoreRead) || partial.ID != tl.ID() {
 		t.Fatalf("uncollected snapshot claimed success: %+v err=%v", partial, err)
 	}
 	_, stage := tl.Begin(context.Background(), "active")
@@ -65,7 +65,7 @@ func TestCollectionDeadlineAndFinishRetry(t *testing.T) {
 	stage.End(nil)
 	operationErr := errors.New("business failure")
 	partial, err = tl.Finish(canceled, operationErr)
-	if !errors.Is(err, context.Canceled) || partial.Complete {
+	if !errors.Is(err, context.Canceled) || (partial.Collection.LocalFlushed && partial.Collection.StoreRead) {
 		t.Fatalf("uncollected finish claimed success: %+v err=%v", partial, err)
 	}
 	if _, ok := registry.Lookup(tl.ID()); ok {
@@ -75,7 +75,7 @@ func TestCollectionDeadlineAndFinishRetry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	final, err := tl.Finish(ctx, nil)
-	if err != nil || !final.Complete || final.Status != timeline.Failed || final.Error != operationErr.Error() {
+	if err != nil || !(final.Collection.LocalFlushed && final.Collection.StoreRead) || final.Status != timeline.Failed || final.Error != operationErr.Error() {
 		t.Fatalf("retry lost the first finish result: %+v err=%v", final, err)
 	}
 	again, err := tl.Snapshot(ctx)

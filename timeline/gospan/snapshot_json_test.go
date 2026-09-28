@@ -26,7 +26,7 @@ func TestSnapshotJSONRoundTripAndOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	roundTripSnapshot(t, progress)
-	if !progress.Complete || progress.Status != timeline.Running || len(progress.RunningStages()) != 2 {
+	if !(progress.Collection.LocalFlushed && progress.Collection.StoreRead) || progress.Status != timeline.Running || len(progress.RunningStages()) != 2 {
 		t.Fatalf("progress=%+v", progress)
 	}
 	child.End(context.Canceled)
@@ -106,7 +106,7 @@ func TestInvalidFieldsReportCollectionFailureAndStillFinish(t *testing.T) {
 				stage.End(nil)
 			}
 			final, err := tl.Finish(ctx, nil)
-			if !errors.Is(err, timeline.ErrInvalidField) || final.Complete || final.Status != timeline.Succeeded {
+			if !errors.Is(err, timeline.ErrInvalidField) || (final.Collection.LocalFlushed && final.Collection.StoreRead) || final.Status != timeline.Succeeded {
 				t.Fatalf("result=%+v err=%v", final, err)
 			}
 			if _, err := json.Marshal(final); err != nil {

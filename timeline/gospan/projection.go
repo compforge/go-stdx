@@ -4,7 +4,9 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"github.com/google/uuid"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -20,6 +22,7 @@ type checkpoint struct{ sequence uint64 }
 // slices. Its lock is independent of recorder.mu so a full producer queue can
 // always be drained. Exporters only receive detached snapshots.
 type projection struct {
+	prefix   string
 	id       string // immutable even before the root event is collected
 	mu       sync.Mutex
 	rootID   timeline.StageID
@@ -29,14 +32,14 @@ type projection struct {
 }
 
 func newProjection(id string) *projection {
-	return &projection{id: id, records: make(map[timeline.StageID]*timeline.StageRecord), changed: make(chan struct{})}
+	return &projection{prefix: uuid.NewString(), id: id, records: make(map[timeline.StageID]*timeline.StageRecord), changed: make(chan struct{})}
 }
 
 func (p *projection) WriteBatch(batch gospan.Batch) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, event := range batch.Events {
-		id := timeline.StageID(event.SpanID)
+		id := p.stageID(event.SpanID)
 		record := p.records[id]
 		if record == nil {
 			record = &timeline.StageRecord{ID: id, Status: timeline.Running}
@@ -45,7 +48,7 @@ func (p *projection) WriteBatch(batch gospan.Batch) error {
 		switch event.Kind {
 		case gospan.EventStart:
 			record.Name = event.Name
-			record.ParentID = timeline.StageID(event.ParentID)
+			record.ParentID = p.stageID(event.ParentID)
 			record.StartedAt = time.Unix(0, event.StartNS).UTC()
 			if event.ParentID == 0 {
 				p.rootID = id
@@ -101,7 +104,7 @@ func (p *projection) wait(ctx context.Context, sequence uint64) error {
 func (p *projection) snapshot(complete bool) timeline.Snapshot {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	result := timeline.Snapshot{ID: p.id, CapturedAt: time.Now().UTC(), Complete: complete}
+	result := timeline.Snapshot{ID: p.id, CapturedAt: time.Now().UTC(), Collection: timeline.Collection{LocalFlushed: complete, StoreRead: complete}}
 	if root := p.records[p.rootID]; root != nil {
 		result.RootStageID, result.Operation = root.ID, root.Name
 		result.StartedAt, result.FinishedAt = root.StartedAt, root.FinishedAt
@@ -139,4 +142,11 @@ func cloneFields(fields map[string]json.RawMessage) map[string]json.RawMessage {
 		result[key] = slices.Clone(value)
 	}
 	return result
+}
+
+func (p *projection) stageID(id int64) timeline.StageID {
+	if id == 0 {
+		return ""
+	}
+	return timeline.StageID(p.prefix + ":" + strconv.FormatInt(id, 10))
 }

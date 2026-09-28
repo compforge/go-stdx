@@ -199,3 +199,8 @@ type fieldValue struct{ value json.RawMessage }
 
 func (inertStage) SetFields(...timeline.Field)  {}
 func (inertStage) End(error, ...timeline.Field) {}
+
+func (t *recorder) Flush(ctx context.Context) error {
+	_, err := t.Snapshot(ctx)
+	return err
+}
