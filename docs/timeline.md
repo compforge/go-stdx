@@ -90,6 +90,17 @@ Record 提交的完整记录不需要 caller 管理 revision：同 ID 同内容�
 不能重新打开已结束阶段。业务根结束不阻止补录，也不自动结束其他阶段。
 MergeDocument 提供相同的纯数据合并规则供 Store 实现复用，业务无需维护合并逻辑。
 
+Document 与 Snapshot 的 JSON 使用文档内 Actor 字典：顶层 `actors` 按完整 `(ID, Name)`
+去重，stage 仅保存 `actor_ref`。引用从 1 开始，对应 `actors[actor_ref-1]`；0 或缺省表示
+没有 Actor，空 Actor 不入表。整个 timeline 没有 Actor 时不输出 `actors`，未提供 Actor 的
+stage 不输出 `actor_ref`。Actor 始终可选。引用只属于这份 payload，不是执行者身份，
+也不跨文档保持稳定。
+
+录制、Update 和内存中的 Stage 始终携带完整 Actor。标准 `json.Marshal` 在编码整份文档
+时生成引用，`json.Unmarshal` 还原完整 Actor，非法引用返回错误。SQL Store 在解码并合并
+完整事实后重新编码，多个写入方不会混用各自的索引。单独序列化 Stage 仍保留完整 Actor，
+caller 不需要参与字典维护。
+
 MemoryStore 通过锁原子合并。SQL Store 使用固定表 timelines，一条 timeline 一行。
 先读取 payload 和 version，在 Go 中合并，仅按预期 version 更新；竞争失败后重新读、
 重新合并并退避重试，受 caller context 约束。创建竞争通过主键处理。重复投递不推进

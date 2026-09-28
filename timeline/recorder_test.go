@@ -295,7 +295,7 @@ func TestActorIsOptionalAndMayContainOnlyName(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(raw), `"actor":`) != (actor != (timeline.Actor{})) {
+		if strings.Contains(string(raw), `"actor_ref":`) != (actor != (timeline.Actor{})) {
 			t.Fatalf("optional actor: %s", raw)
 		}
 		var restored timeline.Snapshot

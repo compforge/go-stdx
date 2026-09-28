@@ -36,6 +36,8 @@ type OperationRecord struct {
 
 // Document is the durable, current state of one timeline, without read-time
 // collection metadata. It retains one state per stage, not an event history.
+// JSON uses a document-local actors table and 1-based stage actor_ref values;
+// the Go data always contains full Actors.
 type Document struct {
 	ID          string  `json:"id"`
 	RootStageID StageID `json:"root_stage_id"`

@@ -196,13 +196,18 @@ func TestProcessesRecordCompletedStages(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		data := timeline.Stage{ID: "external:shared", Name: "image_pull", StartedAt: at, FinishedAt: at.Add(time.Second), Status: timeline.Succeeded}
+		data := timeline.Stage{ID: "external:shared", Name: "image_pull", Actor: timeline.Actor{Name: "kubelet"}, StartedAt: at, FinishedAt: at.Add(time.Second), Status: timeline.Succeeded}
 		for range 2 {
 			if err := tl.Record(data); err != nil {
 				t.Fatal(err)
 			}
 		}
 		data.ID = timeline.StageID(os.Getenv("TIMELINE_RECORD_WORKER"))
+		data.Actor = timeline.Actor{ID: string(data.ID), Name: "pod-" + string(data.ID)}
+		if err := tl.Record(data); err != nil {
+			t.Fatal(err)
+		}
+		data.ID += ":followup"
 		if err := tl.Record(data); err != nil {
 			t.Fatal(err)
 		}
@@ -238,7 +243,97 @@ func TestProcessesRecordCompletedStages(t *testing.T) {
 	}
 	wg.Wait()
 	got, err := owner.Snapshot(ctx)
-	if err != nil || len(got.Stages) != 4 || got.Status != timeline.Succeeded || !got.FinishedAt.Equal(first.FinishedAt) {
+	if err != nil || len(got.Stages) != 7 || got.Status != timeline.Succeeded || !got.FinishedAt.Equal(first.FinishedAt) {
 		t.Fatalf("process replay: %+v %v", got, err)
+	}
+	for _, stage := range got.Stages {
+		if stage.ID == "external:shared" {
+			if stage.Actor != (timeline.Actor{Name: "kubelet"}) {
+				t.Fatal(stage)
+			}
+		} else if stage.Actor.ID == "" || (string(stage.ID) != stage.Actor.ID && string(stage.ID) != stage.Actor.ID+":followup") || stage.Actor.Name != "pod-"+stage.Actor.ID {
+			t.Fatal(stage)
+		}
+	}
+	var payload []byte
+	if err := db.QueryRow("SELECT payload FROM timelines WHERE id = ?", "record-operation").Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Actors []timeline.Actor `json:"actors"`
+	}
+	if err := json.Unmarshal(payload, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if len(wire.Actors) != 4 {
+		t.Fatalf("expected shared kubelet and 3 workers: %s", payload)
+	}
+}
+
+func TestSQLActorReferencesArePayloadLocal(t *testing.T) {
+	ctx := context.Background()
+	db := open(t, filepath.Join(t.TempDir(), "actors.db"))
+	schema(t, db)
+	store := sqlstore.New(db)
+	tl, err := timeline.New("actors", timeline.WithStore(store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 9, 28, 1, 0, 0, 0, time.UTC)
+	actorA := timeline.Actor{ID: "a", Name: "pod-a"}
+	actorB := timeline.Actor{ID: "b", Name: "pod-b"}
+	later := timeline.Stage{ID: "later", Name: "step", StartedAt: at.Add(time.Second), FinishedAt: at.Add(2 * time.Second), Status: timeline.Succeeded, Actor: actorA}
+	if err := tl.Record(later); err != nil {
+		t.Fatal(err)
+	}
+	if err := tl.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	earlier := later
+	earlier.ID, earlier.Actor, earlier.StartedAt = "earlier", actorB, at
+	if err := tl.Record(earlier); err != nil {
+		t.Fatal(err)
+	}
+	if err := tl.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Sorting puts B first, changing A's payload-local ref from 1 to 2. A retry
+	// still compares full Actors after decoding and must remain idempotent.
+	if err := tl.Record(later); err != nil {
+		t.Fatal(err)
+	}
+	if err := tl.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var payload []byte
+	var version int64
+	if err := db.QueryRow("SELECT payload, version FROM timelines WHERE id = ?", "actors").Scan(&payload, &version); err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Actors []timeline.Actor `json:"actors"`
+		Stages []struct {
+			ID     string          `json:"id"`
+			Ref    uint64          `json:"actor_ref"`
+			Inline json.RawMessage `json:"actor"`
+		} `json:"stages"`
+	}
+	if err := json.Unmarshal(payload, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if version != 2 || len(wire.Actors) != 2 || wire.Actors[0] != actorB || wire.Actors[1] != actorA || len(wire.Stages) != 2 || wire.Stages[0].Ref != 1 || wire.Stages[1].Ref != 2 || len(wire.Stages[1].Inline) != 0 {
+		t.Fatalf("payload=%s version=%d", payload, version)
+	}
+	got, err := store.Read(ctx, "actors")
+	if err != nil || got.Stages[0].Actor != actorB || got.Stages[1].Actor != actorA {
+		t.Fatalf("read=%+v err=%v", got, err)
+	}
+	conflicting := later
+	conflicting.Actor = actorB
+	if err := tl.Record(conflicting); err != nil {
+		t.Fatal(err)
+	}
+	if err := tl.Flush(ctx); !errors.Is(err, timeline.ErrConflict) {
+		t.Fatalf("lost actor conflict: %v", err)
 	}
 }
