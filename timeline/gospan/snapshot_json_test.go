@@ -19,8 +19,8 @@ func TestSnapshotJSONRoundTripAndOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	input["names"].([]string)[0] = "after"
-	parentCtx, parent := tl.Begin(ctx, "parent")
-	_, child := tl.Begin(parentCtx, "child", timeline.Field{Key: "count", Value: 9007199254740993})
+	parentCtx, parent := timeline.BeginContext(ctx, tl, "parent")
+	_, child := timeline.BeginContext(parentCtx, tl, "child", timeline.WithFields(timeline.Field{Key: "count", Value: 9007199254740993}))
 	progress, err := tl.Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -91,17 +91,17 @@ func TestInvalidFieldsReportCollectionFailureAndStillFinish(t *testing.T) {
 				t.Fatal(err)
 			}
 			invalid := timeline.Field{Key: "nan", Value: math.NaN()}
-			var stage timeline.Stage
+			var stage timeline.StageHandle
 			if call == "begin" {
-				_, stage = tl.Begin(ctx, "child", invalid)
+				_, stage = timeline.BeginContext(ctx, tl, "child", timeline.WithFields(invalid))
 			} else {
-				_, stage = tl.Begin(ctx, "child")
+				_, stage = timeline.BeginContext(ctx, tl, "child")
 			}
 			if call == "set" {
 				tl.SetFields(invalid)
 			}
 			if call == "end" {
-				stage.End(nil, invalid)
+				stage.End(nil, timeline.WithEndFields(invalid))
 			} else {
 				stage.End(nil)
 			}

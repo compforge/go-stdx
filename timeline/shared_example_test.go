@@ -17,7 +17,7 @@ func ExampleNew() {
 	}
 	worker, _ := timeline.New("sandbox-42", timeline.WithStore(store),
 		timeline.WithActor(timeline.Actor{Name: "scheduler-pod"}))
-	_, stage := worker.Begin(ctx, "acquire_carrier")
+	_, stage := timeline.BeginContext(ctx, worker, "acquire_carrier")
 	stage.End(nil)
 	if err := worker.Flush(ctx); err != nil {
 		panic(err)

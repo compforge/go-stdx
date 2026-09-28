@@ -16,8 +16,8 @@ func ExampleNew() {
 	if err != nil {
 		panic(err)
 	}
-	prepareCtx, prepare := tl.Begin(ctx, "prepare")
-	_, workspace := tl.Begin(prepareCtx, "resolve_workspace")
+	prepareCtx, prepare := timeline.BeginContext(ctx, tl, "prepare")
+	_, workspace := timeline.BeginContext(prepareCtx, tl, "resolve_workspace")
 	workspace.End(nil)
 	prepare.End(nil)
 

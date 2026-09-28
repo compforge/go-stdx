@@ -15,7 +15,7 @@ import (
 
 func TestSnapshotQueriesPreserveParallelFacts(t *testing.T) {
 	at := time.Now()
-	s := timeline.Snapshot{Stages: []timeline.StageRecord{
+	s := timeline.Snapshot{Stages: []timeline.Stage{
 		{ID: "1", Status: timeline.Running},
 		{ID: "2", Status: timeline.Failed, FinishedAt: at.Add(time.Second)},
 		{ID: "3", Status: timeline.Succeeded, FinishedAt: at.Add(3 * time.Second)},
@@ -53,11 +53,14 @@ func TestFinalFieldsAndResultAreAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	tl.SetFields(timeline.Field{Key: "runtime", Value: "pod"})
-	_, stage := tl.Begin(ctx, "work")
+	_, stage := timeline.BeginContext(ctx, tl, "work")
 	var wg sync.WaitGroup
 	for _, value := range []string{"a", "b"} {
 		wg.Add(1)
-		go func() { defer wg.Done(); stage.End(errors.New(value), timeline.Field{Key: "result", Value: value}) }()
+		go func() {
+			defer wg.Done()
+			stage.End(errors.New(value), timeline.WithEndFields(timeline.Field{Key: "result", Value: value}))
+		}()
 	}
 	wg.Wait()
 	final, err := tl.Finish(context.Background(), nil)
@@ -69,7 +72,7 @@ func TestFinalFieldsAndResultAreAtomic(t *testing.T) {
 		t.Fatalf("mixed winners: %+v", r)
 	}
 	tl.SetFields(timeline.Field{Key: "runtime", Value: "bed"})
-	stage.End(nil, timeline.Field{Key: "result", Value: "late"})
+	stage.End(nil, timeline.WithEndFields(timeline.Field{Key: "result", Value: "late"}))
 	again, err := tl.Snapshot(context.Background())
 	if err != nil || !reflect.DeepEqual(final, again) {
 		t.Fatalf("final mutated: %+v, %v", again, err)
@@ -82,7 +85,7 @@ func TestFinalFieldsAndResultAreAtomic(t *testing.T) {
 func TestNoopRetainsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	got, stage := timeline.Noop("disabled-operation").Begin(ctx, "disabled")
+	got, stage := timeline.BeginContext(ctx, timeline.Noop("disabled-operation"), "disabled")
 	if got != ctx || got.Err() != context.Canceled {
 		t.Fatal("changed context")
 	}

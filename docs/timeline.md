@@ -6,15 +6,19 @@
 stage，通过共享 Store 汇总。ID 的生成、业务含义和唯一性范围归 caller；SDK 不解析
 sandbox、conversation 等业务概念。New 只构造句柄，不查询远端，不重置已有操作。
 
-Stage 表示一段实际工作或等待。每次执行生成独立 UUID，重试业务产生新阶段；网络
-重试沿用同一份状态和修订号。一个 stage 由其创建方更新，其修订号递增；多实例写入
-通常意味着分别创建 stage，不意味着竞争修改同一个 stage。
+Stage 是一段实际工作或等待的纯数据；StageHandle 是 Begin 返回的工作接口。
+现场执行用 Begin/End，已经拿到真实起止时间的组件用 Record(Stage) 完整补录。
+两条路径产生相同的 Stage，Snapshot.Stages 可以直接 JSON 序列化。
+
+Begin 默认生成独立 UUID，也可用 WithStageID 指定稳定身份。业务重试产生新阶段；
+写入重试沿用同一份身份和内容。一个运行阶段由执行方更新；多实例通常分别创建
+阶段，重复采集同一外部事实则用稳定 ID 去重，不任意竞争覆盖同一个阶段。
 
 Actor 可选，用于标记执行该阶段的实例。ID 和 Name 都可独立省略，例如 Pod UID 与
 Pod name，或只填 worker name。它不代表发起请求的用户。WithActor 在构造句柄时设置，
 该句柄创建的阶段自动携带它；空 Actor 不出现在 JSON 中。
 
-Snapshot、StageRecord、StageRef 都是纯数据，支持标准 JSON 序列化。业务代码可以直接
+Snapshot、Stage、StageRef 都是纯数据，支持标准 JSON 序列化。业务代码可以直接
 持久化或返回 Snapshot，不必再定义一套 DTO。属性在记录调用返回前完成 JSON 编码，
 使用 map[string]json.RawMessage 保存，FieldValue[T] 解码时不会先经过 float64。
 
@@ -24,15 +28,24 @@ Snapshot、StageRecord、StageRef 都是纯数据，支持标准 JSON 序列化�
 Store 的配置和可选 Actor，就能构造自己的句柄。普通函数可以直接接收 Timeline；
 NewContext / FromContext 仅是可选的传递便利。
 
-Begin 返回的 context 携带父阶段身份，保留原来的取消和截止时间。StageFromContext
-可以取出纯数据 StageRef，经消息或数据库传给别的进程；NewStageContext 把它附到
-接收方自己的 context。同一 timeline 的父身份会被继承，其他 timeline 的身份不会
-产生跨操作父子边。只有业务 ID 时，阶段直接挂在确定性的操作根下。
+Begin 不需要 context，WithParent 显式指定父阶段，StageHandle.ID 返回阶段身份。
+BeginContext 是可选适配：继承同一 timeline 的 StageRef，保留取消和截止时间，
+返回携带新 StageRef 的 context，不隐式绑定 Timeline。StageFromContext /
+NewStageContext 可以跨进程传递纯数据父引用；没有父引用时挂在操作根下。
 
-Begin、SetFields、End 只编码并缓存事实，不执行远端 IO。End 第一次决定阶段结果，
-后续调用不修改它。Flush(ctx) 确认本句柄此前的记录写入 Store，失败保留原始状态和
-修订号以便重试。句柄不创建后台 goroutine；caller 在业务交接点或丢弃句柄前 Flush。
-长阶段如需展示运行态，应在 Begin 后 Flush，不能只在 End 后上报。
+Begin、SetFields、End、Record 只编码并缓存事实，不执行远端 IO。End 第一次决定
+阶段结果，后续调用不修改它。WithStartTime / WithEndTime 接收真实来源时间；未指定
+时用本机时钟，普通现场计时额外保留单调时钟测得的耗时。显式时间保留原样，不强行
+裁剪到父阶段或根操作的区间内。
+
+Record 要求非空 ID、名称、起止时间，以及 succeeded、failed 或 canceled 状态；
+未结束的步骤使用 Begin/End。Actor 完全沿用输入，不用采集者冒充执行者。输入字段在
+返回前复制，随后修改 caller 的 map 或 JSON 字节不会改变缓存。格式错误由 Record
+立即返回，持久化和与已存数据的冲突由 Flush 返回。
+
+Flush(ctx) 确认本句柄此前的记录写入 Store，失败保留原始内容供重试。句柄不创建
+后台 goroutine；caller 在业务交接点或丢弃句柄前 Flush。长阶段如需展示运行态，应在
+Begin 后 Flush，不能只在 End 后上报。
 
 协调方在业务结束时调用 Finish，它记录终态并读取当前快照。业务结束不会封锁后续
 阶段记录，延迟上报可以继续汇入 Snapshot。根状态由调用 Start 的句柄写入，使用递增修订号；开始边界和已接受的终态不能
@@ -68,9 +81,13 @@ Store.Merge 接收 Update：可选的完整根状态、当前写入方更新过�
 持久化纯数据，保存整个 timeline 的最新状态，不保留事件日志，也不保存 CapturedAt 或
 Collection 这类读取时事实。Snapshot 从最新 Document 生成，结束后不缓存另一份最终快照。
 
-每个阶段独立递增 Revision；低版本忽略，同版本同内容幂等，同版本不同内容返回
+现场阶段的存储封装 StageUpdate 独立递增 Revision；Stage 和 Snapshot 不携带版本。
+低版本忽略，同版本同内容幂等，同版本不同内容返回
 ErrConflict。开始边界、名称、父阶段和 Actor 不可改；终态不可重开。根字段也作为带
 修订号的完整状态提交，乱序重试不会把新字段改回旧值。一个 Update 中有冲突时整体拒绝。
+Record 提交的完整记录不需要 caller 管理 revision：同 ID 同内容幂等；已有开始边界
+一致时可补入完成事实；已完成区间出现不同内容返回 ErrConflict。迟到的低版本开始
+不能重新打开已结束阶段。业务根结束不阻止补录，也不自动结束其他阶段。
 MergeDocument 提供相同的纯数据合并规则供 Store 实现复用，业务无需维护合并逻辑。
 
 MemoryStore 通过锁原子合并。SQL Store 使用固定表 timelines，一条 timeline 一行。
@@ -110,8 +127,11 @@ Document.Snapshot 生成纯数据视图；只有真正读写成功的采集路�
 ## 本地 gospan 实现
 
 timeline/gospan 用 gospan 的阶段事件投影进程内数据，没有共享 Store。它在构造时
-开始操作，Finish 要求本地阶段已结束，随后关闭 writer；结束后的句柄不会继续录制。
-这是有明确封存边界的本地实现。需要跨实例写入与迟到上报时使用 timeline.New 和 Store。
+开始操作，Finish 要求本地阶段已结束，随后关闭 writer；结束后不再开始本地计时阶段，但仍可用 Record 补录完整区间。
+这是有明确封存边界的本地实现。需要跨实例共享持久化时使用 timeline.New 和 Store。
+
+gospan 没有历史区间录入 API，Record 使用 SDK 的本地缓冲与合并规则保存真实时间，
+不通过立即 Start/End 伪造计时。
 
 本地实现的私有检查点确保此前记录已进入投影；输出采用相同的 Collection 与纯数据
 类型。Registry 只查找该进程内的活跃句柄，不参与跨实例关联。两种实现都不要求

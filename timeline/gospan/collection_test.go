@@ -43,7 +43,8 @@ func TestCollectionDeadlineAndFinishRetry(t *testing.T) {
 	}()
 	rootCtx, root := tracer.Start(context.Background(), "delayed")
 	registry := timeline.NewRegistry(func(context.Context, string, string, ...timeline.Field) (timeline.Timeline, error) {
-		return &recorder{tracer: tracer, root: root, rootCtx: rootCtx, sink: sink}, nil
+		imports, _ := timeline.New(t.Name())
+		return &recorder{tracer: tracer, root: root, rootCtx: rootCtx, sink: sink, imports: imports, stages: make(map[timeline.StageID]*stage)}, nil
 	})
 	tl, err := registry.Create(context.Background(), t.Name(), "delayed")
 	if err != nil {
@@ -55,7 +56,7 @@ func TestCollectionDeadlineAndFinishRetry(t *testing.T) {
 	if !errors.Is(err, context.Canceled) || (partial.Collection.LocalFlushed && partial.Collection.StoreRead) || partial.ID != tl.ID() {
 		t.Fatalf("uncollected snapshot claimed success: %+v err=%v", partial, err)
 	}
-	_, stage := tl.Begin(context.Background(), "active")
+	_, stage := timeline.BeginContext(context.Background(), tl, "active")
 	if _, err := tl.Finish(canceled, nil); !errors.Is(err, timeline.ErrActiveStages) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("active stage and collection errors = %v", err)
 	}
@@ -90,7 +91,7 @@ func TestCheckpointAttributeDoesNotCollideWithUserFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, stage := tl.Begin(ctx, "work", timeline.Field{Key: checkpointKey, Value: "user value"})
+	_, stage := timeline.BeginContext(ctx, tl, "work", timeline.WithFields(timeline.Field{Key: checkpointKey, Value: "user value"}))
 	stage.End(nil)
 	for range 3 {
 		if s, err := tl.Snapshot(context.Background()); err != nil || len(s.Fields) != 1 || string(s.Fields[checkpointKey]) != "999" {
@@ -115,7 +116,7 @@ func TestConstructorIsolatesForeignGospanContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, stage := tl.Begin(ctx, "child")
+	_, stage := timeline.BeginContext(ctx, tl, "child")
 	stage.End(nil)
 	s, err := tl.Finish(context.Background(), nil)
 	if err != nil || s.Operation != "own" || len(s.Stages) != 1 || s.Stages[0].ParentID != s.RootStageID {

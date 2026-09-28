@@ -91,22 +91,29 @@ func StageFromContext(ctx context.Context) (StageRef, bool) {
 
 func rootID(id string) StageID { return StageID("operation:" + id) }
 
-func (t *Recorder) Begin(ctx context.Context, name string, fields ...Field) (context.Context, Stage) {
+func (t *Recorder) Begin(name string, opts ...StageOption) StageHandle {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	parent := rootID(t.id)
-	if ref, ok := StageFromContext(ctx); ok && ref.TimelineID == t.id && ref.StageID != "" {
-		parent = ref.StageID
-	}
 	now := time.Now()
-	s := &recordedStage{owner: t, started: now, record: StageRecord{
-		ID: StageID(uuid.NewString()), ParentID: parent, Name: name,
-		StartedAt: now.UTC(), Status: Running, Actor: t.actor, Fields: t.encode(fields),
-	}}
-	// A business terminal record is not a distributed ingestion barrier. Late
-	// workers retain their actual intervals instead of becoming silent no-ops.
+	data := Stage{ID: StageID(uuid.NewString()), ParentID: rootID(t.id), Name: name,
+		StartedAt: now.UTC(), Status: Running, Actor: t.actor}
+	for _, opt := range opts {
+		if err := opt(&data); err != nil {
+			t.fieldErr = errors.Join(t.fieldErr, err)
+			return noopStage{}
+		}
+	}
+	if data.ID == "" || data.ID == data.ParentID || data.ID == rootID(t.id) || data.StartedAt.IsZero() {
+		t.fieldErr = errors.Join(t.fieldErr, ErrInvalidStage)
+		return noopStage{}
+	}
+	data.Fields = cloneJSONFields(data.Fields)
+	s := &recordedStage{owner: t, started: now, record: StageUpdate{Stage: data}}
+	if !data.StartedAt.Equal(now) {
+		s.started = time.Time{}
+	}
 	s.enqueue()
-	return NewStageContext(ctx, StageRef{TimelineID: t.id, StageID: s.record.ID}), s
+	return s
 }
 
 func (t *Recorder) SetFields(fields ...Field) {
@@ -126,16 +133,18 @@ func (t *Recorder) SetFields(fields ...Field) {
 
 type recordedStage struct {
 	owner   *Recorder
-	record  StageRecord
+	record  StageUpdate
 	started time.Time // retains the monotonic clock for the measured duration
 	ended   bool
 }
+
+func (s *recordedStage) ID() StageID { return s.record.ID }
 
 func (s *recordedStage) enqueue() {
 	s.record.Revision++
 	record := s.record
 	record.Fields = cloneJSONFields(record.Fields)
-	s.owner.pending = append(s.owner.pending, Update{Stages: []StageRecord{record}})
+	s.owner.pending = append(s.owner.pending, Update{Stages: []StageUpdate{record}})
 }
 
 func (s *recordedStage) SetFields(fields ...Field) {
@@ -148,16 +157,27 @@ func (s *recordedStage) SetFields(fields ...Field) {
 	s.enqueue()
 }
 
-func (s *recordedStage) End(err error, fields ...Field) {
+func (s *recordedStage) End(err error, opts ...EndOption) {
 	s.owner.mu.Lock()
 	defer s.owner.mu.Unlock()
 	if s.ended {
 		return
 	}
 	s.ended = true
-	s.record.Fields = mergeFields(s.record.Fields, s.owner.encode(fields))
-	s.record.FinishedAt = time.Now().UTC()
-	s.record.Elapsed = time.Since(s.started)
+	now := time.Now()
+	s.record.FinishedAt = now.UTC()
+	for _, opt := range opts {
+		if optionErr := opt(&s.record.Stage); optionErr != nil {
+			s.owner.fieldErr = errors.Join(s.owner.fieldErr, optionErr)
+		}
+	}
+	if s.record.FinishedAt.IsZero() || s.record.FinishedAt.Before(s.record.StartedAt) {
+		s.owner.fieldErr = errors.Join(s.owner.fieldErr, ErrInvalidStage)
+		return
+	}
+	if !s.started.IsZero() && s.record.FinishedAt.Equal(now) {
+		s.record.Elapsed = now.Sub(s.started)
+	}
 	s.record.Status, s.record.Error = result(err)
 	s.enqueue()
 }
@@ -225,12 +245,16 @@ func (t *Recorder) Flush(ctx context.Context) error {
 	}
 	// Coalesce intermediate states before IO; only latest revisions are durable.
 	update := Update{}
-	stages := make(map[StageID]StageRecord)
+	stages := make(map[StageID]StageUpdate)
 	for _, pending := range updates {
+		update.Completed = append(update.Completed, pending.Completed...)
 		if pending.Operation != nil {
 			update.Operation = pending.Operation
 		}
 		for _, stage := range pending.Stages {
+			if old, ok := stages[stage.ID]; ok && old.Revision == stage.Revision && !sameJSON(old, stage) {
+				return errors.Join(ErrConflict, fieldErr)
+			}
 			stages[stage.ID] = stage
 		}
 	}

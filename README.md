@@ -72,11 +72,22 @@ worker, err := timeline.New(sandboxID,
 if err != nil {
     return err
 }
-stageCtx, stage := worker.Begin(ctx, "acquire_carrier")
-operationErr := acquireCarrier(stageCtx)
+stage := worker.Begin("acquire_carrier")
+operationErr := acquireCarrier(ctx)
 stage.End(operationErr)
 if err := worker.Flush(ctx); err != nil {
     return err // retry Flush before publishing completion if completeness matters
+}
+
+// Or report an interval whose actual boundaries are already known.
+if err := worker.Record(timeline.Stage{
+    ID: "pod-uid:image-pull:attempt-1", Name: "image_pull",
+    StartedAt: pullingAt, FinishedAt: pulledAt, Status: timeline.Succeeded,
+}); err != nil {
+    return err
+}
+if err := worker.Flush(ctx); err != nil {
+    return err
 }
 
 // Coordinator records the business outcome; late stages can still be collected.
@@ -96,7 +107,7 @@ Without `WithStore`, New uses a private in-memory store. A shared
 Finish; it does not aggregate across replicas. Its Registry remains process-local.
 
 Pass `timeline.Timeline` directly to business functions. `NewContext` / `FromContext`
-are optional helpers. `StageFromContext` / `NewStageContext` let shared recorders
+and `BeginContext` are optional helpers. `StageFromContext` / `NewStageContext` let shared recorders
 carry a serializable parent reference across process boundaries.
 
 `Snapshot.Collection.LocalFlushed` and `StoreRead` describe this handle's flush and

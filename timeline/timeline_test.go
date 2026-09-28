@@ -9,7 +9,7 @@ import (
 func TestIntervalDuration(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	snapshot := Snapshot{StartedAt: start, CapturedAt: start.Add(10 * time.Second)}
-	stage := StageRecord{StartedAt: start.Add(time.Second)}
+	stage := Stage{StartedAt: start.Add(time.Second)}
 	if snapshot.Duration() != 10*time.Second || stage.Duration(snapshot.CapturedAt) != 9*time.Second {
 		t.Fatal("running intervals must use the snapshot capture time")
 	}
@@ -18,7 +18,7 @@ func TestIntervalDuration(t *testing.T) {
 	if snapshot.Duration() != 5*time.Second || stage.Duration(snapshot.CapturedAt) != 2*time.Second {
 		t.Fatal("finished intervals must keep their own end time")
 	}
-	if (Snapshot{}).Duration() != 0 || (StageRecord{}).Duration(start) != 0 {
+	if (Snapshot{}).Duration() != 0 || (Stage{}).Duration(start) != 0 {
 		t.Fatal("uncollected intervals must not report a fabricated duration")
 	}
 }
