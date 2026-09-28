@@ -10,29 +10,31 @@ import (
 	"time"
 )
 
-// Timeline represents one operation. Methods and returned Stages are safe for
-// concurrent use. The completion owner must end every stage and call Finish,
-// even after the original request has been canceled.
+// Timeline is a recording handle for one business operation. Multiple handles
+// may contribute through a shared Store. Methods and returned Stages are safe
+// for concurrent use. Business code owns completion and stage attribution.
 type Timeline interface {
+	// Flush confirms this handle's preceding records reached its backend.
+	// It does not wait for records buffered by other handles.
+	Flush(context.Context) error
 	// ID is the immutable, caller-supplied identity of this operation.
 	// Its meaning and uniqueness scope belong to the caller.
 	ID() string
-	// SetFields merges operation fields while it is open; updates after Finish are ignored.
+	// SetFields records operation attributes; the coordinator owns these keys.
 	SetFields(fields ...Field)
 	// Begin starts a stage beneath the stage carried by ctx, or beneath the
 	// operation when ctx has no stage from this timeline. The returned context
-	// retains the caller's values, cancellation and deadline. After Finish,
-	// Begin returns an inert Stage and leaves ctx unchanged.
+	// retains the caller's values, cancellation and deadline. Shared handles
+	// accept late stages after Finish; sealing local backends may return no-ops.
 	Begin(ctx context.Context, name string, fields ...Field) (context.Context, Stage)
-	// Snapshot waits for preceding records to be collected without ending any
-	// work. ctx bounds the collection wait. On error the returned snapshot is
-	// best effort and Complete is false. Invalid fields return ErrInvalidField. Later records may also be included.
+	// Snapshot flushes this handle and collects its backend's current facts.
+	// Collection reports local flush and backend read success, never global
+	// completeness. On error it returns best-effort data alongside the error.
 	Snapshot(ctx context.Context) (Snapshot, error)
-	// Finish freezes the operation's result and releases recording resources.
-	// ErrActiveStages leaves the operation open so its owner can end the stages
-	// and retry. Otherwise the first result wins, including when ctx expires
-	// waiting for collection; a subsequent call can await the final snapshot.
-	// The returned error describes recording, independently of operationErr.
+	// Finish records the operation result and returns a snapshot. Shared stores
+	// accept late stage updates; a local backend may seal and return
+	// ErrActiveStages until its stages end. The returned error is a collection
+	// error, independent of operationErr. Finish never closes a shared Store.
 	Finish(ctx context.Context, operationErr error) (Snapshot, error)
 }
 
@@ -59,8 +61,9 @@ type Field struct {
 	Value any    `json:"value"`
 }
 
-// StageID is unique within one Timeline, not across processes or operations.
-type StageID int64
+// StageID is an opaque identity. Shared recorders generate UUIDs independently
+// in each process; local backends namespace their backend-local IDs.
+type StageID string
 
 type Status string
 
@@ -76,6 +79,8 @@ const (
 type StageRecord struct {
 	ID         StageID                    `json:"id"`
 	ParentID   StageID                    `json:"parent_id"`
+	Actor      Actor                      `json:"actor,omitzero"`
+	Elapsed    time.Duration              `json:"elapsed_ns,omitempty"`
 	Name       string                     `json:"name"`
 	StartedAt  time.Time                  `json:"started_at"`
 	FinishedAt time.Time                  `json:"finished_at,omitempty"`
@@ -86,14 +91,16 @@ type StageRecord struct {
 
 // Duration measures a finished interval, or a running interval at capturedAt.
 func (s StageRecord) Duration(capturedAt time.Time) time.Duration {
+	if !s.FinishedAt.IsZero() && s.Elapsed != 0 {
+		return s.Elapsed
+	}
 	return interval(s.StartedAt, s.FinishedAt, capturedAt)
 }
 
 // Snapshot is a detached view. Stages are ordered by start time, then ID;
 // overlapping intervals stay overlapping rather than being added together.
-// Complete means preceding records were collected without field encoding errors,
-// not that the work ended.
-// CapturedAt is frozen at FinishedAt once a final snapshot is complete.
+// Collection describes the observations this reader can confirm. A successful
+// read does not prove all processes have flushed or that no late stage remains.
 // All slices and JSON field values belong to this snapshot. Standard json.Marshal
 // and json.Unmarshal persist it without a backend or a caller-defined DTO.
 // Times use time.Time JSON encoding (RFC 3339); zero FinishedAt means running.
@@ -108,7 +115,14 @@ type Snapshot struct {
 	Error       string                     `json:"error,omitempty"`
 	Fields      map[string]json.RawMessage `json:"fields,omitempty"`
 	Stages      []StageRecord              `json:"stages,omitempty"`
-	Complete    bool                       `json:"complete"`
+	Collection  Collection                 `json:"collection"`
+}
+
+// Collection is deliberately scoped: neither field asserts that all distributed
+// participants have reported. Remote crashed/unflushed producers are unknown.
+type Collection struct {
+	LocalFlushed bool `json:"local_flushed"`
+	StoreRead    bool `json:"store_read"`
 }
 
 func (s Snapshot) Duration() time.Duration {

@@ -87,7 +87,7 @@ func TestRegistryConcurrentCreateAndParallelRecording(t *testing.T) {
 	wg.Wait()
 	parent.End(nil)
 	s := finishTimeline(t, owner)
-	if s.ID != owner.ID() || s.RootStageID == 0 || len(s.Stages) != 1+2*count {
+	if s.ID != owner.ID() || s.RootStageID == "" || len(s.Stages) != 1+2*count {
 		t.Fatalf("lost identity or work: %+v", s)
 	}
 	for _, stage := range s.Stages {

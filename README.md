@@ -20,7 +20,7 @@ Subpackages mirror stdlib naming so call sites read like the standard library th
 | `netx` | `IsDNSHostname` — ASCII DNS hostname syntax without IP literals | `net` parses IP addresses but does not export hostname validation |
 | `randx` | `Hex(n)` — n random bytes as lowercase hex | the "short random id" helper every daemon re-writes |
 | `uuid` | `New`, `NewWithPrefix`, `V4`, `V7`, `V7Hex` — resource / random / time-ordered ids | thin wrappers over `google/uuid` for the resource ID, string, and dashless-hex shapes services keep re-wrapping |
-| `timeline` | operation/stage interfaces and detached, structured snapshots | retains overlapping intervals, hierarchy and results; [`timeline/gospan`](timeline/gospan) supplies the recording implementation |
+| `timeline` | operation/stage interfaces and detached, structured snapshots | joins stages from independent processes by business ID; snapshots retain intervals, hierarchy, optional actors and results |
 
 Rules of the house:
 
@@ -46,43 +46,65 @@ Used by [case-code-review](https://github.com/qiankunli/case-code-review), [host
 
 ## Operation timelines
 
-Use `timeline.Timeline` in application code and choose `timeline/gospan` at the
-construction boundary. Supply a stable ID for each operation; the caller defines
-its meaning and uniqueness scope. One timeline represents one operation; stages can nest,
-overlap, and finish on different goroutines. A snapshot includes each stage's
-interval, parent, attributes and result, so parallel work stays visible.
+Record one operation across concurrent components and processes using its business ID.
+Each process constructs its own handle against the same Store. Stages retain their
+own intervals, parent IDs, results, and optional executor identity; parallel work
+stays parallel in the snapshot.
 
 ```go
-tl, err := gospantimeline.New(ctx, operationID, "sandbox.start")
-if err != nil {
-	return err
-}
-prepareCtx, prepare := tl.Begin(ctx, "prepare")
-operationErr := prepareSandbox(prepareCtx, tl)
-prepare.End(operationErr)
+// Configure once per process with the application's existing *sql.DB.
+store := sqlstore.New(db)
 
-collectCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-defer cancel()
-snapshot, captureErr := tl.Finish(collectCtx, operationErr)
-// Handle captureErr separately from operationErr; export snapshot as needed.
+// Coordinator: New binds the ID; Start records the business start boundary.
+tl, err := timeline.New(sandboxID, timeline.WithStore(store))
+if err != nil {
+    return err
+}
+if err := tl.Start(ctx, "sandbox_start"); err != nil {
+    return err // recording error; the application chooses its policy
+}
+
+// Another process can construct the same handle without a remote Open call.
+worker, err := timeline.New(sandboxID,
+    timeline.WithStore(store),
+    timeline.WithActor(timeline.Actor{Name: podName}), // optional
+)
+if err != nil {
+    return err
+}
+stageCtx, stage := worker.Begin(ctx, "acquire_carrier")
+operationErr := acquireCarrier(stageCtx)
+stage.End(operationErr)
+if err := worker.Flush(ctx); err != nil {
+    return err // retry Flush before publishing completion if completeness matters
+}
+
+// Coordinator records the business outcome; late stages can still be collected.
+snapshot, captureErr := tl.Finish(ctx, operationErr)
+// json.Marshal(snapshot) persists data directly; no separate application DTO.
 ```
 
-Import the backend as
-`gospantimeline "github.com/compforge/go-stdx/timeline/gospan"`. Use
-`tl.Snapshot(ctx)` to inspect running work without stopping it. The completion
-owner ends all stages and calls `Finish`, even if the requesting client has left.
-Pass the timeline directly to business functions. `NewContext` / `FromContext`
-are optional helpers; neither constructors nor `Begin` bind the instance for you.
+Import `github.com/compforge/go-stdx/timeline` and
+`github.com/compforge/go-stdx/timeline/sqlstore`. Create the SQL schema through the
+application's migrations before use; see [storage and lifecycle](docs/timeline.md).
+The application owns connection pools, IO budgets and retention. SQLite is used
+only by the storage integration tests; applications choose their database driver.
 
-For components without a direct call chain, share a process-local
-`timeline.NewRegistry(gospantimeline.New)`: the owner calls
-`Create(ctx, operationID, "sandbox.start")`, and collaborators call
-`Lookup(operationID)`. The registry rejects duplicate active IDs and removes
-sealed operations when `Finish` returns. It does not aggregate across processes.
-See the executable [registry example](timeline/example_test.go).
+Without `WithStore`, New uses a private in-memory store. A shared
+`NewMemoryStore()` joins handles in one process. The optional
+`timeline/gospan` backend records into a local projection and seals its writer at
+Finish; it does not aggregate across replicas. Its Registry remains process-local.
 
-No external collector or global tracer is needed. See the executable
-[example](timeline/gospan/example_test.go) and [lifecycle and snapshot contract](docs/timeline.md).
+Pass `timeline.Timeline` directly to business functions. `NewContext` / `FromContext`
+are optional helpers. `StageFromContext` / `NewStageContext` let shared recorders
+carry a serializable parent reference across process boundaries.
+
+`Snapshot.Collection.LocalFlushed` and `StoreRead` describe this handle's flush and
+backend read. Neither claims all producers have reported. Actor is optional;
+omitting it does not change recording, and empty actor data is omitted from JSON.
+
+See the [executable shared-store example](timeline/shared_example_test.go) and
+[lifecycle, storage and collection contract](docs/timeline.md).
 
 ## License
 

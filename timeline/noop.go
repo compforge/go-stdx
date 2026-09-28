@@ -16,8 +16,10 @@ func (noop) Begin(ctx context.Context, _ string, _ ...Field) (context.Context, S
 	return ctx, noop{}
 }
 func (t noop) Snapshot(context.Context) (Snapshot, error) {
-	return Snapshot{ID: t.id, Complete: true}, nil
+	return Snapshot{ID: t.id, Collection: Collection{LocalFlushed: true, StoreRead: true}}, nil
 }
 func (t noop) Finish(context.Context, error) (Snapshot, error) {
-	return Snapshot{ID: t.id, Complete: true}, nil
+	return Snapshot{ID: t.id, Collection: Collection{LocalFlushed: true, StoreRead: true}}, nil
 }
+
+func (noop) Flush(context.Context) error { return nil }

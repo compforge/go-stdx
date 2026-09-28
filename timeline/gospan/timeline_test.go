@@ -35,8 +35,8 @@ func snapshot(t *testing.T, tl timeline.Timeline) timeline.Snapshot {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	s, err := tl.Snapshot(ctx)
-	if err != nil || !s.Complete {
-		t.Fatalf("snapshot: complete=%v err=%v", s.Complete, err)
+	if err != nil || !(s.Collection.LocalFlushed && s.Collection.StoreRead) {
+		t.Fatalf("snapshot: complete=%v err=%v", (s.Collection.LocalFlushed && s.Collection.StoreRead), err)
 	}
 	return s
 }

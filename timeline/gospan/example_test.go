@@ -30,7 +30,7 @@ func ExampleNew() {
 		panic(err)
 	}
 	fmt.Println(tl.ID() == result.ID)
-	fmt.Println(result.Operation, result.Status, result.Complete)
+	fmt.Println(result.Operation, result.Status, (result.Collection.LocalFlushed && result.Collection.StoreRead))
 	fmt.Println(result.Stages[1].ParentID == result.Stages[0].ID)
 	// Output:
 	// true

@@ -16,16 +16,16 @@ import (
 func TestSnapshotQueriesPreserveParallelFacts(t *testing.T) {
 	at := time.Now()
 	s := timeline.Snapshot{Stages: []timeline.StageRecord{
-		{ID: 1, Status: timeline.Running},
-		{ID: 2, Status: timeline.Failed, FinishedAt: at.Add(time.Second)},
-		{ID: 3, Status: timeline.Succeeded, FinishedAt: at.Add(3 * time.Second)},
-		{ID: 4, Status: timeline.Running},
-		{ID: 5, Status: timeline.Canceled, FinishedAt: at},
+		{ID: "1", Status: timeline.Running},
+		{ID: "2", Status: timeline.Failed, FinishedAt: at.Add(time.Second)},
+		{ID: "3", Status: timeline.Succeeded, FinishedAt: at.Add(3 * time.Second)},
+		{ID: "4", Status: timeline.Running},
+		{ID: "5", Status: timeline.Canceled, FinishedAt: at},
 	}}
-	if got := s.RunningStages(); len(got) != 2 || got[0].ID != 1 || got[1].ID != 4 {
+	if got := s.RunningStages(); len(got) != 2 || got[0].ID != "1" || got[1].ID != "4" {
 		t.Fatalf("running = %+v", got)
 	}
-	if got, ok := s.LatestFailedStage(); !ok || got.ID != 2 {
+	if got, ok := s.LatestFailedStage(); !ok || got.ID != "2" {
 		t.Fatalf("failed = %+v, %v", got, ok)
 	}
 	if _, ok := (timeline.Snapshot{}).LatestFailedStage(); ok {
@@ -88,7 +88,7 @@ func TestNoopRetainsCanceledContext(t *testing.T) {
 	}
 	stage.End(nil)
 	snapshot, err := timeline.Noop("disabled-operation").Finish(ctx, nil)
-	if err != nil || snapshot.ID != "disabled-operation" || !snapshot.Complete || len(snapshot.Stages) != 0 {
+	if err != nil || snapshot.ID != "disabled-operation" || !(snapshot.Collection.LocalFlushed && snapshot.Collection.StoreRead) || len(snapshot.Stages) != 0 {
 		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
 	}
 }
