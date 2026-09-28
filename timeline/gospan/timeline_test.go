@@ -50,7 +50,18 @@ func TestNestedAndOverlappingStages(t *testing.T) {
 	if partial.Status != timeline.Running || len(partial.Stages) != 3 {
 		t.Fatalf("running snapshot = %+v", partial)
 	}
-	p, c, s := partial.Stages[0], partial.Stages[1], partial.Stages[2]
+	byID := func(snapshot timeline.Snapshot, id timeline.StageID) timeline.Stage {
+		t.Helper()
+		for _, record := range snapshot.Stages {
+			if record.ID == id {
+				return record
+			}
+		}
+		t.Fatalf("missing stage %s", id)
+		return timeline.Stage{}
+	}
+	// Equal wall-clock timestamps are ordered by ID, not by creation order.
+	p, c, s := byID(partial, parent.ID()), byID(partial, child.ID()), byID(partial, sibling.ID())
 	if p.ParentID != partial.RootStageID || c.ParentID != p.ID || s.ParentID != partial.RootStageID {
 		t.Fatalf("lost parent relationships: %+v", partial.Stages)
 	}
@@ -61,7 +72,7 @@ func TestNestedAndOverlappingStages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if final.Stages[2].StartedAt.After(final.Stages[1].FinishedAt) {
+	if byID(final, sibling.ID()).StartedAt.After(byID(final, child.ID()).FinishedAt) {
 		t.Fatal("overlapping work was serialized in the projection")
 	}
 	if final.Stages[0].FinishedAt.IsZero() || final.Duration() <= 0 {
