@@ -13,6 +13,8 @@ import (
 // concurrent use. The completion owner must end every stage and call Finish,
 // even after the original request has been canceled.
 type Timeline interface {
+	// SetFields merges operation fields while it is open; updates after Finish are ignored.
+	SetFields(fields ...Field)
 	// Begin starts a stage beneath the stage carried by ctx, or beneath the
 	// operation when ctx has no stage from this timeline. The returned context
 	// retains the caller's values, cancellation and deadline. After Finish,
@@ -35,9 +37,9 @@ type Timeline interface {
 type Stage interface {
 	// SetFields merges attributes; the last value for a key wins.
 	SetFields(fields ...Field)
-	// End records the result exactly once. Later End and SetFields calls have
+	// End atomically records final fields and the result exactly once. Later End and SetFields calls have
 	// no effect. A nil error means success.
-	End(err error)
+	End(err error, fields ...Field)
 }
 
 var ErrActiveStages = errors.New("timeline: operation still has active stages")

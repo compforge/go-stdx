@@ -1,0 +1,92 @@
+package timeline_test
+
+import (
+	"context"
+	"errors"
+	"reflect"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/compforge/go-stdx/timeline"
+	gospantimeline "github.com/compforge/go-stdx/timeline/gospan"
+)
+
+func TestSnapshotQueriesPreserveParallelFacts(t *testing.T) {
+	at := time.Now()
+	s := timeline.Snapshot{Stages: []timeline.StageRecord{
+		{ID: 1, Status: timeline.Running},
+		{ID: 2, Status: timeline.Failed, FinishedAt: at.Add(time.Second)},
+		{ID: 3, Status: timeline.Succeeded, FinishedAt: at.Add(3 * time.Second)},
+		{ID: 4, Status: timeline.Running},
+		{ID: 5, Status: timeline.Canceled, FinishedAt: at},
+	}}
+	if got := s.RunningStages(); len(got) != 2 || got[0].ID != 1 || got[1].ID != 4 {
+		t.Fatalf("running = %+v", got)
+	}
+	if got, ok := s.LatestFailedStage(); !ok || got.ID != 2 {
+		t.Fatalf("failed = %+v, %v", got, ok)
+	}
+	if _, ok := (timeline.Snapshot{}).LatestFailedStage(); ok {
+		t.Fatal("empty snapshot has failure")
+	}
+}
+
+func TestFieldValueLastValueAndType(t *testing.T) {
+	fields := []timeline.Field{{Key: "key", Value: "old"}, {Key: "key", Value: 42}}
+	if v, ok := timeline.FieldValue[int](fields, "key"); !ok || v != 42 {
+		t.Fatalf("value=%v ok=%v", v, ok)
+	}
+	if _, ok := timeline.FieldValue[string](fields, "key"); ok {
+		t.Fatal("must not fall back to an older value with a matching type")
+	}
+	if _, ok := timeline.FieldValue[int](fields, "missing"); ok {
+		t.Fatal("missing field is present")
+	}
+}
+
+func TestFinalFieldsAndResultAreAtomic(t *testing.T) {
+	ctx, tl, err := gospantimeline.New(context.Background(), "operation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tl.SetFields(timeline.Field{Key: "runtime", Value: "pod"})
+	_, stage := tl.Begin(ctx, "work")
+	var wg sync.WaitGroup
+	for _, value := range []string{"a", "b"} {
+		wg.Add(1)
+		go func() { defer wg.Done(); stage.End(errors.New(value), timeline.Field{Key: "result", Value: value}) }()
+	}
+	wg.Wait()
+	final, err := tl.Finish(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := final.Stages[0]
+	if v, _ := timeline.FieldValue[string](r.Fields, "result"); v != r.Error {
+		t.Fatalf("mixed winners: %+v", r)
+	}
+	tl.SetFields(timeline.Field{Key: "runtime", Value: "bed"})
+	stage.End(nil, timeline.Field{Key: "result", Value: "late"})
+	again, err := tl.Snapshot(context.Background())
+	if err != nil || !reflect.DeepEqual(final, again) {
+		t.Fatalf("final mutated: %+v, %v", again, err)
+	}
+	if v, _ := timeline.FieldValue[string](final.Fields, "runtime"); v != "pod" {
+		t.Fatalf("runtime=%q", v)
+	}
+}
+
+func TestNoopRetainsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got, stage := timeline.Noop().Begin(ctx, "disabled")
+	if got != ctx || got.Err() != context.Canceled {
+		t.Fatal("changed context")
+	}
+	stage.End(nil)
+	snapshot, err := timeline.Noop().Finish(ctx, nil)
+	if err != nil || !snapshot.Complete || len(snapshot.Stages) != 0 {
+		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
+	}
+}

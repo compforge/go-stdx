@@ -76,6 +76,14 @@ func (t *recorder) Begin(ctx context.Context, name string, fields ...timeline.Fi
 	return t.context(ctx, spanCtx), &stage{owner: t, span: span}
 }
 
+func (t *recorder) SetFields(fields ...timeline.Field) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.finished {
+		t.root.SetAttrs(attrs(fields)...)
+	}
+}
+
 func (s *stage) SetFields(fields ...timeline.Field) {
 	s.owner.mu.Lock()
 	defer s.owner.mu.Unlock()
@@ -84,12 +92,13 @@ func (s *stage) SetFields(fields ...timeline.Field) {
 	}
 }
 
-func (s *stage) End(err error) {
+func (s *stage) End(err error, fields ...timeline.Field) {
 	s.owner.mu.Lock()
 	defer s.owner.mu.Unlock()
 	if s.ended {
 		return
 	}
+	s.span.SetAttrs(attrs(fields)...)
 	s.span.Fail(err)
 	s.span.End()
 	s.ended = true
@@ -151,5 +160,5 @@ type inertStage struct{}
 
 type fieldValue struct{ value any }
 
-func (inertStage) SetFields(...timeline.Field) {}
-func (inertStage) End(error)                   {}
+func (inertStage) SetFields(...timeline.Field)  {}
+func (inertStage) End(error, ...timeline.Field) {}
