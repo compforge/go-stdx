@@ -10,11 +10,9 @@ type noop struct{ id string }
 
 func (t noop) ID() string { return t.id }
 
-func (noop) SetFields(...Field)  {}
-func (noop) End(error, ...Field) {}
-func (noop) Begin(ctx context.Context, _ string, _ ...Field) (context.Context, Stage) {
-	return ctx, noop{}
-}
+func (noop) SetFields(...Field)                       {}
+func (noop) Record(Stage) error                       { return nil }
+func (noop) Begin(string, ...StageOption) StageHandle { return noopStage{} }
 func (t noop) Snapshot(context.Context) (Snapshot, error) {
 	return Snapshot{ID: t.id, Collection: Collection{LocalFlushed: true, StoreRead: true}}, nil
 }
@@ -23,3 +21,9 @@ func (t noop) Finish(context.Context, error) (Snapshot, error) {
 }
 
 func (noop) Flush(context.Context) error { return nil }
+
+type noopStage struct{}
+
+func (noopStage) ID() StageID             { return "" }
+func (noopStage) SetFields(...Field)      {}
+func (noopStage) End(error, ...EndOption) {}

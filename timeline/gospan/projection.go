@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
-	"github.com/google/uuid"
 	"slices"
 	"strconv"
 	"sync"
@@ -12,7 +11,12 @@ import (
 
 	"github.com/akmadian/gospan"
 	"github.com/compforge/go-stdx/timeline"
+	"github.com/google/uuid"
 )
+
+const boundaryKey = "go-stdx.timeline.boundary"
+
+type boundary struct{ data timeline.Stage }
 
 const checkpointKey = "go-stdx.timeline.checkpoint"
 
@@ -22,27 +26,38 @@ type checkpoint struct{ sequence uint64 }
 // slices. Its lock is independent of recorder.mu so a full producer queue can
 // always be drained. Exporters only receive detached snapshots.
 type projection struct {
-	prefix   string
-	id       string // immutable even before the root event is collected
-	mu       sync.Mutex
-	rootID   timeline.StageID
-	records  map[timeline.StageID]*timeline.StageRecord
-	sequence uint64
-	changed  chan struct{}
+	prefix     string
+	id         string // immutable even before the root event is collected
+	mu         sync.Mutex
+	rootID     timeline.StageID
+	records    map[timeline.StageID]*timeline.Stage
+	identities map[int64]timeline.StageID
+	boundaries map[timeline.StageID]timeline.Stage
+	sequence   uint64
+	changed    chan struct{}
 }
 
 func newProjection(id string) *projection {
-	return &projection{prefix: uuid.NewString(), id: id, records: make(map[timeline.StageID]*timeline.StageRecord), changed: make(chan struct{})}
+	return &projection{prefix: uuid.NewString(), id: id, rootID: timeline.StageID("operation:" + id), identities: make(map[int64]timeline.StageID), boundaries: make(map[timeline.StageID]timeline.Stage), records: make(map[timeline.StageID]*timeline.Stage), changed: make(chan struct{})}
 }
 
 func (p *projection) WriteBatch(batch gospan.Batch) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, event := range batch.Events {
+		if event.ParentID == 0 && event.Kind == gospan.EventStart {
+			p.identities[event.SpanID] = p.rootID
+		}
+		for _, attr := range event.Attrs {
+			if marker, ok := attr.Value.Any().(boundary); attr.Key == boundaryKey && ok {
+				p.identities[event.SpanID] = marker.data.ID
+				p.boundaries[marker.data.ID] = marker.data
+			}
+		}
 		id := p.stageID(event.SpanID)
 		record := p.records[id]
 		if record == nil {
-			record = &timeline.StageRecord{ID: id, Status: timeline.Running}
+			record = &timeline.Stage{ID: id, Status: timeline.Running}
 			p.records[id] = record
 		}
 		switch event.Kind {
@@ -50,9 +65,6 @@ func (p *projection) WriteBatch(batch gospan.Batch) error {
 			record.Name = event.Name
 			record.ParentID = p.stageID(event.ParentID)
 			record.StartedAt = time.Unix(0, event.StartNS).UTC()
-			if event.ParentID == 0 {
-				p.rootID = id
-			}
 		case gospan.EventEnd:
 			record.FinishedAt = time.Unix(0, event.EndNS).UTC()
 			record.Error = event.Error
@@ -70,11 +82,26 @@ func (p *projection) WriteBatch(batch gospan.Batch) error {
 				p.sequence = marker.sequence
 				continue
 			}
+			if marker, ok := attr.Value.Any().(boundary); attr.Key == boundaryKey && ok {
+				if record.Fields == nil && len(marker.data.Fields) > 0 {
+					record.Fields = make(map[string]json.RawMessage)
+				}
+				for key, value := range marker.data.Fields {
+					record.Fields[key] = value
+				}
+				continue
+			}
 			value := attr.Value.Any().(fieldValue)
 			if record.Fields == nil {
 				record.Fields = make(map[string]json.RawMessage)
 			}
 			record.Fields[attr.Key] = value.value
+		}
+		if data, ok := p.boundaries[id]; ok {
+			record.ParentID, record.Actor, record.StartedAt = data.ParentID, data.Actor, data.StartedAt
+			if !data.FinishedAt.IsZero() {
+				record.FinishedAt, record.Elapsed = data.FinishedAt, data.Elapsed
+			}
 		}
 	}
 	close(p.changed)
@@ -104,7 +131,7 @@ func (p *projection) wait(ctx context.Context, sequence uint64) error {
 func (p *projection) snapshot(complete bool) timeline.Snapshot {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	result := timeline.Snapshot{ID: p.id, CapturedAt: time.Now().UTC(), Collection: timeline.Collection{LocalFlushed: complete, StoreRead: complete}}
+	result := timeline.Snapshot{ID: p.id, RootStageID: p.rootID, CapturedAt: time.Now().UTC(), Collection: timeline.Collection{LocalFlushed: complete, StoreRead: complete}}
 	if root := p.records[p.rootID]; root != nil {
 		result.RootStageID, result.Operation = root.ID, root.Name
 		result.StartedAt, result.FinishedAt = root.StartedAt, root.FinishedAt
@@ -122,7 +149,7 @@ func (p *projection) snapshot(complete bool) timeline.Snapshot {
 		stage.Fields = cloneFields(record.Fields)
 		result.Stages = append(result.Stages, stage)
 	}
-	slices.SortFunc(result.Stages, func(a, b timeline.StageRecord) int {
+	slices.SortFunc(result.Stages, func(a, b timeline.Stage) int {
 		if order := a.StartedAt.Compare(b.StartedAt); order != 0 {
 			return order
 		}
@@ -147,6 +174,9 @@ func cloneFields(fields map[string]json.RawMessage) map[string]json.RawMessage {
 func (p *projection) stageID(id int64) timeline.StageID {
 	if id == 0 {
 		return ""
+	}
+	if identity, ok := p.identities[id]; ok {
+		return identity
 	}
 	return timeline.StageID(p.prefix + ":" + strconv.FormatInt(id, 10))
 }

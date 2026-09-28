@@ -55,7 +55,7 @@ func TestIndependentProcessesContributeStages(t *testing.T) {
 			t.Fatal(err)
 		}
 		ctx := timeline.NewStageContext(context.Background(), ref)
-		_, stage := tl.Begin(ctx, "ensure_runtime", timeline.Field{Key: "worker", Value: id})
+		_, stage := timeline.BeginContext(ctx, tl, "ensure_runtime", timeline.WithFields(timeline.Field{Key: "worker", Value: id}))
 		// Persist a running boundary as a live observer would see it.
 		if err := tl.Flush(ctx); err != nil {
 			t.Fatal(err)
@@ -76,7 +76,7 @@ func TestIndependentProcessesContributeStages(t *testing.T) {
 	if err := owner.Start(ctx, "sandbox_start"); err != nil {
 		t.Fatal(err)
 	}
-	parentCtx, parent := owner.Begin(ctx, "startup")
+	parentCtx, parent := timeline.BeginContext(ctx, owner, "startup")
 	ref, _ := timeline.StageFromContext(parentCtx)
 	encoded, _ := json.Marshal(ref)
 	if err := owner.Flush(ctx); err != nil {
@@ -134,7 +134,7 @@ func TestIndependentProcessesContributeStages(t *testing.T) {
 		t.Fatalf("reopen: %+v %v", restored, err)
 	}
 	// A contributor may legitimately arrive after the business terminal record.
-	_, late := reader.Begin(ctx, "late_report")
+	_, late := timeline.BeginContext(ctx, reader, "late_report")
 	late.End(nil)
 	after, err := reader.Snapshot(ctx)
 	if err != nil || len(after.Stages) != workers+2 || after.Status != timeline.Succeeded {
@@ -184,5 +184,61 @@ func TestSQLIdempotencyConflictAndIsolation(t *testing.T) {
 	}
 	if _, err := store.Read(ctx, "missing"); !errors.Is(err, timeline.ErrNotFound) {
 		t.Fatalf("missing: %v", err)
+	}
+}
+
+// Subprocesses share only the SQL database. Each independently replays one
+// completed external interval and adds its own stage after the root is finished.
+func TestProcessesRecordCompletedStages(t *testing.T) {
+	at := time.Date(2026, 9, 28, 1, 0, 0, 0, time.UTC)
+	if path := os.Getenv("TIMELINE_RECORD_DB"); path != "" {
+		tl, err := timeline.New("record-operation", timeline.WithStore(sqlstore.New(open(t, path))))
+		if err != nil {
+			t.Fatal(err)
+		}
+		data := timeline.Stage{ID: "external:shared", Name: "image_pull", StartedAt: at, FinishedAt: at.Add(time.Second), Status: timeline.Succeeded}
+		for range 2 {
+			if err := tl.Record(data); err != nil {
+				t.Fatal(err)
+			}
+		}
+		data.ID = timeline.StageID(os.Getenv("TIMELINE_RECORD_WORKER"))
+		if err := tl.Record(data); err != nil {
+			t.Fatal(err)
+		}
+		if err := tl.Flush(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	path := filepath.Join(t.TempDir(), "record.db")
+	db := open(t, path)
+	schema(t, db)
+	owner, _ := timeline.New("record-operation", timeline.WithStore(sqlstore.New(db)))
+	if err := owner.Start(ctx, "start"); err != nil {
+		t.Fatal(err)
+	}
+	first, err := owner.Finish(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := range 3 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestProcessesRecordCompletedStages$")
+			command.Env = append(os.Environ(), "TIMELINE_RECORD_DB="+path, fmt.Sprintf("TIMELINE_RECORD_WORKER=worker-%d", i))
+			if out, err := command.CombinedOutput(); err != nil {
+				t.Errorf("child %d: %v\n%s", i, err, out)
+			}
+		}()
+	}
+	wg.Wait()
+	got, err := owner.Snapshot(ctx)
+	if err != nil || len(got.Stages) != 4 || got.Status != timeline.Succeeded || !got.FinishedAt.Equal(first.FinishedAt) {
+		t.Fatalf("process replay: %+v %v", got, err)
 	}
 }

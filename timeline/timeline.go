@@ -11,9 +11,14 @@ import (
 )
 
 // Timeline is a recording handle for one business operation. Multiple handles
-// may contribute through a shared Store. Methods and returned Stages are safe
+// may contribute through a shared Store. Methods and returned handles are safe
 // for concurrent use. Business code owns completion and stage attribution.
 type Timeline interface {
+	// Record copies and buffers a completed stage. It performs no IO; Flush
+	// confirms persistence. ID, name, actual start/end times and a terminal status
+	// must be supplied. ParentID defaults to the operation root; Actor is preserved.
+	// Repeated identical IDs are idempotent; conflicting persisted facts fail Flush.
+	Record(Stage) error
 	// Flush confirms this handle's preceding records reached its backend.
 	// It does not wait for records buffered by other handles.
 	Flush(context.Context) error
@@ -22,11 +27,9 @@ type Timeline interface {
 	ID() string
 	// SetFields records operation attributes; the coordinator owns these keys.
 	SetFields(fields ...Field)
-	// Begin starts a stage beneath the stage carried by ctx, or beneath the
-	// operation when ctx has no stage from this timeline. The returned context
-	// retains the caller's values, cancellation and deadline. Shared handles
-	// accept late stages after Finish; sealing local backends may return no-ops.
-	Begin(ctx context.Context, name string, fields ...Field) (context.Context, Stage)
+	// Begin starts a stage using the local clock unless source times are supplied.
+	// Parentage is explicit; BeginContext is an optional context convenience.
+	Begin(name string, opts ...StageOption) StageHandle
 	// Snapshot flushes this handle and collects its backend's current facts.
 	// Collection reports local flush and backend read success, never global
 	// completeness. On error it returns best-effort data alongside the error.
@@ -38,15 +41,18 @@ type Timeline interface {
 	Finish(ctx context.Context, operationErr error) (Snapshot, error)
 }
 
-// Stage represents running work or a wait. It may end on a different goroutine
+// StageHandle represents running work or a wait. It may end on a different goroutine
 // from the one that began it. A parent may end before its children.
-type Stage interface {
+type StageHandle interface {
+	ID() StageID
 	// SetFields merges attributes; the last value for a key wins.
 	SetFields(fields ...Field)
 	// End atomically records final fields and the result exactly once. Later End and SetFields calls have
 	// no effect. A nil error means success.
-	End(err error, fields ...Field)
+	End(err error, opts ...EndOption)
 }
+
+var ErrInvalidStage = errors.New("timeline: invalid stage")
 
 var ErrEmptyID = errors.New("timeline: ID must not be empty")
 
@@ -61,8 +67,8 @@ type Field struct {
 	Value any    `json:"value"`
 }
 
-// StageID is an opaque identity. Shared recorders generate UUIDs independently
-// in each process; local backends namespace their backend-local IDs.
+// StageID is an opaque identity. Begin generates a UUID by default; callers
+// may supply a stable ID for a specific externally observed execution.
 type StageID string
 
 type Status string
@@ -74,10 +80,9 @@ const (
 	Canceled  Status = "canceled"
 )
 
-// StageRecord retains the interval and result of a stage. ParentID refers to
+// Stage retains the interval and result of a stage. ParentID refers to
 // another stage or Snapshot.RootStageID. FinishedAt is zero while work is running.
-type StageRecord struct {
-	Revision   uint64                     `json:"revision,omitempty"`
+type Stage struct {
 	ID         StageID                    `json:"id"`
 	ParentID   StageID                    `json:"parent_id"`
 	Actor      Actor                      `json:"actor,omitzero"`
@@ -91,7 +96,7 @@ type StageRecord struct {
 }
 
 // Duration measures a finished interval, or a running interval at capturedAt.
-func (s StageRecord) Duration(capturedAt time.Time) time.Duration {
+func (s Stage) Duration(capturedAt time.Time) time.Duration {
 	if !s.FinishedAt.IsZero() && s.Elapsed != 0 {
 		return s.Elapsed
 	}
@@ -115,7 +120,7 @@ type Snapshot struct {
 	Status      Status                     `json:"status"`
 	Error       string                     `json:"error,omitempty"`
 	Fields      map[string]json.RawMessage `json:"fields,omitempty"`
-	Stages      []StageRecord              `json:"stages,omitempty"`
+	Stages      []Stage                    `json:"stages,omitempty"`
 	Collection  Collection                 `json:"collection"`
 }
 
@@ -156,4 +161,17 @@ func FromContext(ctx context.Context) (Timeline, bool) {
 	}
 	t, ok := ctx.Value(contextKey{}).(Timeline)
 	return t, ok && t != nil
+}
+
+// BeginContext is an optional adapter; Timeline itself does not require context
+// binding. It preserves cancellation and only inherits a parent from this timeline.
+func BeginContext(ctx context.Context, t Timeline, name string, opts ...StageOption) (context.Context, StageHandle) {
+	if ref, ok := StageFromContext(ctx); ok && ref.TimelineID == t.ID() && ref.StageID != "" {
+		opts = append([]StageOption{WithParent(ref.StageID)}, opts...)
+	}
+	stage := t.Begin(name, opts...)
+	if stage.ID() == "" {
+		return ctx, stage
+	}
+	return NewStageContext(ctx, StageRef{TimelineID: t.ID(), StageID: stage.ID()}), stage
 }

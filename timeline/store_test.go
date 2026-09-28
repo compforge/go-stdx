@@ -12,8 +12,8 @@ import (
 
 func TestDocumentMergeConflictIsAtomicAndTerminalImmutable(t *testing.T) {
 	at := time.Now().UTC()
-	stage := timeline.StageRecord{ID: "s", Name: "work", Revision: 1, StartedAt: at, Status: timeline.Running}
-	doc, _, err := timeline.MergeDocument("id", timeline.Document{}, timeline.Update{Stages: []timeline.StageRecord{stage}})
+	stage := timeline.StageUpdate{Revision: 1, Stage: timeline.Stage{ID: "s", Name: "work", StartedAt: at, Status: timeline.Running}}
+	doc, _, err := timeline.MergeDocument("id", timeline.Document{}, timeline.Update{Stages: []timeline.StageUpdate{stage}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,19 +21,19 @@ func TestDocumentMergeConflictIsAtomicAndTerminalImmutable(t *testing.T) {
 	changed.Name = "wrong"
 	another := stage
 	another.ID = "another"
-	if _, _, err := timeline.MergeDocument("id", doc, timeline.Update{Stages: []timeline.StageRecord{another, changed}}); !errors.Is(err, timeline.ErrConflict) {
+	if _, _, err := timeline.MergeDocument("id", doc, timeline.Update{Stages: []timeline.StageUpdate{another, changed}}); !errors.Is(err, timeline.ErrConflict) {
 		t.Fatal(err)
 	}
 	if len(doc.Stages) != 1 || doc.Stages[0].Name != "work" {
 		t.Fatalf("input mutated: %+v", doc)
 	}
 	stage.Revision, stage.Status, stage.FinishedAt = 2, timeline.Succeeded, at.Add(time.Second)
-	doc, _, err = timeline.MergeDocument("id", doc, timeline.Update{Stages: []timeline.StageRecord{stage}})
+	doc, _, err = timeline.MergeDocument("id", doc, timeline.Update{Stages: []timeline.StageUpdate{stage}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	stage.Revision, stage.Status, stage.FinishedAt = 3, timeline.Running, time.Time{}
-	if _, _, err := timeline.MergeDocument("id", doc, timeline.Update{Stages: []timeline.StageRecord{stage}}); !errors.Is(err, timeline.ErrConflict) {
+	if _, _, err := timeline.MergeDocument("id", doc, timeline.Update{Stages: []timeline.StageUpdate{stage}}); !errors.Is(err, timeline.ErrConflict) {
 		t.Fatalf("reopened terminal: %v", err)
 	}
 }

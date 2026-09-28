@@ -40,14 +40,23 @@ type Document struct {
 	ID          string  `json:"id"`
 	RootStageID StageID `json:"root_stage_id"`
 	OperationRecord
-	Stages []StageRecord `json:"stages,omitempty"`
+	Stages []StageUpdate `json:"stages,omitempty"`
+}
+
+// StageUpdate is the storage envelope. Revision belongs to the writer protocol,
+// not to the public stage data returned in snapshots.
+type StageUpdate struct {
+	Stage
+	Revision uint64 `json:"revision"`
 }
 
 // Update contains only this writer's changes. Each value is a complete state
 // at its revision. Only the coordinator writes Operation; stage owners write Stages.
 type Update struct {
 	Operation *OperationRecord
-	Stages    []StageRecord
+	Stages    []StageUpdate
+	// Completed contains immutable imported intervals, with no caller-managed revision.
+	Completed []Stage
 }
 
 // Store atomically merges updates into one document per ID. Older revisions are
@@ -159,7 +168,36 @@ func MergeDocument(id string, current Document, update Update) (doc Document, ch
 		}
 		changed = true
 	}
-	sortStages(doc.Stages)
+	for _, incoming := range update.Completed {
+		if err := validateCompleted(id, incoming); err != nil {
+			return Document{}, false, err
+		}
+		if incoming.ParentID == "" {
+			incoming.ParentID = rootID(id)
+		}
+		revision := uint64(2)
+		if i, ok := indexes[incoming.ID]; ok {
+			old := doc.Stages[i]
+			if !old.FinishedAt.IsZero() {
+				if !sameJSON(old.Stage, incoming) {
+					return Document{}, false, ErrConflict
+				}
+				continue
+			}
+			if old.ParentID != incoming.ParentID || old.Name != incoming.Name || old.Actor != incoming.Actor || !old.StartedAt.Equal(incoming.StartedAt) {
+				return Document{}, false, ErrConflict
+			}
+			revision = old.Revision + 1
+			incoming.Fields = cloneJSONFields(incoming.Fields)
+			doc.Stages[i] = StageUpdate{Stage: incoming, Revision: revision}
+		} else {
+			incoming.Fields = cloneJSONFields(incoming.Fields)
+			indexes[incoming.ID] = len(doc.Stages)
+			doc.Stages = append(doc.Stages, StageUpdate{Stage: incoming, Revision: revision})
+		}
+		changed = true
+	}
+	sortStageUpdates(doc.Stages)
 	return doc, changed, nil
 }
 
@@ -183,7 +221,7 @@ func sameJSON(a, b any) bool {
 }
 func cloneDocument(doc Document) Document {
 	doc.Fields = cloneJSONFields(doc.Fields)
-	doc.Stages = append([]StageRecord(nil), doc.Stages...)
+	doc.Stages = append([]StageUpdate(nil), doc.Stages...)
 	for i := range doc.Stages {
 		doc.Stages[i].Fields = cloneJSONFields(doc.Stages[i].Fields)
 	}
