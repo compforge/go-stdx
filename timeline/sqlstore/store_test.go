@@ -33,10 +33,7 @@ func open(t *testing.T, path string) *sql.DB {
 
 func schema(t *testing.T, db *sql.DB) {
 	t.Helper()
-	_, err := db.Exec(`CREATE TABLE timeline_records (
- record_seq INTEGER PRIMARY KEY AUTOINCREMENT,
- timeline_id TEXT NOT NULL, record_id TEXT NOT NULL, payload TEXT NOT NULL,
- UNIQUE(timeline_id, record_id))`)
+	_, err := db.Exec(`CREATE TABLE timelines (id TEXT PRIMARY KEY, payload TEXT NOT NULL, version INTEGER NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,37 +140,49 @@ func TestIndependentProcessesContributeStages(t *testing.T) {
 	if err != nil || len(after.Stages) != workers+2 || after.Status != timeline.Succeeded {
 		t.Fatalf("late: %+v %v", after, err)
 	}
+	var rows int
+	if err := db.QueryRow("SELECT COUNT(*) FROM timelines").Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("one document expected: %d %v", rows, err)
+	}
 }
 
 func TestSQLIdempotencyConflictAndIsolation(t *testing.T) {
 	ctx := context.Background()
-	db := open(t, filepath.Join(t.TempDir(), "records.db"))
+	db := open(t, filepath.Join(t.TempDir(), "documents.db"))
 	schema(t, db)
 	store := sqlstore.New(db)
-	record := timeline.Record{ID: "r1", Kind: timeline.OperationStarted, Operation: "start", At: time.Now().UTC()}
-	for i := 0; i < 2; i++ {
-		if err := store.Append(ctx, "a", []timeline.Record{record}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	got, err := store.Read(ctx, "a")
-	if err != nil || len(got) != 1 {
-		t.Fatalf("duplicates: %v %v", got, err)
-	}
-	record.Operation = "other"
-	if err := store.Append(ctx, "a", []timeline.Record{record}); !errors.Is(err, timeline.ErrRecordConflict) {
-		t.Fatalf("conflict: %v", err)
-	}
-	if err := store.Append(ctx, "b", []timeline.Record{record}); err != nil {
+	operation := timeline.OperationRecord{Revision: 1, Operation: "start", StartedAt: time.Now().UTC(), Status: timeline.Running,
+		Fields: map[string]json.RawMessage{"data": json.RawMessage(`{"z":18446744073709551615,"a":1}`)}}
+	update := timeline.Update{Operation: &operation}
+	if err := store.Merge(ctx, "a", update); err != nil {
 		t.Fatal(err)
 	}
-	got, err = store.Read(ctx, "a")
-	if err != nil || got[0].Operation != "start" {
-		t.Fatalf("overwrite: %v %v", got, err)
+	// Emulate normalization by a native JSON column while preserving large numbers.
+	operation.Fields["data"] = json.RawMessage(`{ "a": 1, "z": 18446744073709551615 }`)
+	if err := store.Merge(ctx, "a", update); err != nil {
+		t.Fatal(err)
+	}
+	var version int
+	if err := db.QueryRow("SELECT version FROM timelines WHERE id = ?", "a").Scan(&version); err != nil || version != 1 {
+		t.Fatalf("duplicate advanced version: %d %v", version, err)
+	}
+	operation.Operation = "other"
+	if err := store.Merge(ctx, "a", update); !errors.Is(err, timeline.ErrConflict) {
+		t.Fatalf("conflict: %v", err)
+	}
+	if err := store.Merge(ctx, "b", update); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Read(ctx, "a")
+	if err != nil || got.Operation != "start" {
+		t.Fatalf("overwrite: %+v %v", got, err)
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
 	if _, err := store.Read(canceled, "a"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel: %v", err)
+	}
+	if _, err := store.Read(ctx, "missing"); !errors.Is(err, timeline.ErrNotFound) {
+		t.Fatalf("missing: %v", err)
 	}
 }

@@ -77,6 +77,7 @@ const (
 // StageRecord retains the interval and result of a stage. ParentID refers to
 // another stage or Snapshot.RootStageID. FinishedAt is zero while work is running.
 type StageRecord struct {
+	Revision   uint64                     `json:"revision,omitempty"`
 	ID         StageID                    `json:"id"`
 	ParentID   StageID                    `json:"parent_id"`
 	Actor      Actor                      `json:"actor,omitzero"`
