@@ -19,6 +19,7 @@ type checkpoint struct{ sequence uint64 }
 // slices. Its lock is independent of recorder.mu so a full producer queue can
 // always be drained. Exporters only receive detached snapshots.
 type projection struct {
+	id       string // immutable even before the root event is collected
 	mu       sync.Mutex
 	rootID   timeline.StageID
 	records  map[timeline.StageID]*timeline.StageRecord
@@ -26,8 +27,8 @@ type projection struct {
 	changed  chan struct{}
 }
 
-func newProjection() *projection {
-	return &projection{records: make(map[timeline.StageID]*timeline.StageRecord), changed: make(chan struct{})}
+func newProjection(id string) *projection {
+	return &projection{id: id, records: make(map[timeline.StageID]*timeline.StageRecord), changed: make(chan struct{})}
 }
 
 func (p *projection) WriteBatch(batch gospan.Batch) error {
@@ -102,9 +103,9 @@ func (p *projection) wait(ctx context.Context, sequence uint64) error {
 func (p *projection) snapshot(complete bool) timeline.Snapshot {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	result := timeline.Snapshot{CapturedAt: time.Now().UTC(), Complete: complete}
+	result := timeline.Snapshot{ID: p.id, CapturedAt: time.Now().UTC(), Complete: complete}
 	if root := p.records[p.rootID]; root != nil {
-		result.ID, result.Operation = root.ID, root.Name
+		result.RootStageID, result.Operation = root.ID, root.Name
 		result.StartedAt, result.FinishedAt = root.StartedAt, root.FinishedAt
 		result.Status, result.Error = root.Status, root.Error
 		result.Fields = slices.Clone(root.Fields)

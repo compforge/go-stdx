@@ -39,25 +39,29 @@ type parent struct {
 var _ timeline.Timeline = (*recorder)(nil)
 var _ timeline.Stage = (*stage)(nil)
 
-// New begins one operation and returns a context carrying it. Cancellation of
-// ctx does not finish the operation: the completion owner must call Finish with
-// a context that permits collection. Business contexts retain their own lifetime.
-func New(ctx context.Context, operation string, fields ...timeline.Field) (context.Context, timeline.Timeline, error) {
-	sink := newProjection()
+// New begins an operation with a non-empty, immutable caller-supplied ID.
+// It does not bind the returned Timeline to context. The construction context
+// does not own the operation lifetime; the completion owner must call Finish.
+func New(_ context.Context, id, operation string, fields ...timeline.Field) (timeline.Timeline, error) {
+	if id == "" {
+		return nil, timeline.ErrEmptyID
+	}
+	sink := newProjection(id)
 	// This writer only projects into memory. Blocking on its bounded queue
 	// preserves stage boundaries without coupling producers to external IO.
 	tracer, err := gospan.New(sink, gospan.WithBufferSize(128), gospan.WithBlockingPolicy())
 	if err != nil {
-		return ctx, nil, err
+		return nil, err
 	}
 	// Span IDs are local to a tracer. Never inherit a foreign gospan parent.
 	rootCtx, root := tracer.Start(context.Background(), operation, attrs(fields)...)
 	t := &recorder{tracer: tracer, root: root, rootCtx: rootCtx, sink: sink}
-	return t.context(ctx, rootCtx), t, nil
+	return t, nil
 }
 
+func (t *recorder) ID() string { return t.sink.id }
+
 func (t *recorder) context(ctx, spanCtx context.Context) context.Context {
-	ctx = timeline.NewContext(ctx, t)
 	return context.WithValue(ctx, parentKey{}, parent{owner: t, spanCtx: spanCtx})
 }
 
@@ -76,6 +80,14 @@ func (t *recorder) Begin(ctx context.Context, name string, fields ...timeline.Fi
 	return t.context(ctx, spanCtx), &stage{owner: t, span: span}
 }
 
+func (t *recorder) SetFields(fields ...timeline.Field) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.finished {
+		t.root.SetAttrs(attrs(fields)...)
+	}
+}
+
 func (s *stage) SetFields(fields ...timeline.Field) {
 	s.owner.mu.Lock()
 	defer s.owner.mu.Unlock()
@@ -84,12 +96,13 @@ func (s *stage) SetFields(fields ...timeline.Field) {
 	}
 }
 
-func (s *stage) End(err error) {
+func (s *stage) End(err error, fields ...timeline.Field) {
 	s.owner.mu.Lock()
 	defer s.owner.mu.Unlock()
 	if s.ended {
 		return
 	}
+	s.span.SetAttrs(attrs(fields)...)
 	s.span.Fail(err)
 	s.span.End()
 	s.ended = true
@@ -151,5 +164,5 @@ type inertStage struct{}
 
 type fieldValue struct{ value any }
 
-func (inertStage) SetFields(...timeline.Field) {}
-func (inertStage) End(error)                   {}
+func (inertStage) SetFields(...timeline.Field)  {}
+func (inertStage) End(error, ...timeline.Field) {}
