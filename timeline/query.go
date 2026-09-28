@@ -1,16 +1,17 @@
 package timeline
 
-// FieldValue returns the most recent value for key. Values retain Field's
-// immutable, shallow-copy contract. The boolean is false for missing keys or values of another type.
-func FieldValue[T any](fields []Field, key string) (T, bool) {
-	for i := len(fields) - 1; i >= 0; i-- {
-		if fields[i].Key == key {
-			value, ok := fields[i].Value.(T)
-			return value, ok
-		}
+import "encoding/json"
+
+// FieldValue decodes the most recent value for key using encoding/json.
+// It returns false for a missing key or a JSON value incompatible with T.
+func FieldValue[T any](fields map[string]json.RawMessage, key string) (T, bool) {
+	var value T
+	raw, ok := fields[key]
+	if !ok || json.Unmarshal(raw, &value) != nil {
+		var zero T
+		return zero, false
 	}
-	var zero T
-	return zero, false
+	return value, true
 }
 
 // RunningStages returns all running stages in snapshot order. Concurrent stages

@@ -5,6 +5,7 @@ package timeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -25,7 +26,7 @@ type Timeline interface {
 	Begin(ctx context.Context, name string, fields ...Field) (context.Context, Stage)
 	// Snapshot waits for preceding records to be collected without ending any
 	// work. ctx bounds the collection wait. On error the returned snapshot is
-	// best effort and Complete is false. Later records may also be included.
+	// best effort and Complete is false. Invalid fields return ErrInvalidField. Later records may also be included.
 	Snapshot(ctx context.Context) (Snapshot, error)
 	// Finish freezes the operation's result and releases recording resources.
 	// ErrActiveStages leaves the operation open so its owner can end the stages
@@ -47,10 +48,12 @@ type Stage interface {
 
 var ErrEmptyID = errors.New("timeline: ID must not be empty")
 
+var ErrInvalidField = errors.New("timeline: field is not JSON serializable")
+
 var ErrActiveStages = errors.New("timeline: operation still has active stages")
 
-// Field attaches a value to an operation or stage. Field slices are copied;
-// referenced values must be immutable after recording (copies are shallow).
+// Field is recording input. Values must be JSON serializable and must not be
+// mutated during the recording call. Implementations encode them before returning.
 type Field struct {
 	Key   string `json:"key"`
 	Value any    `json:"value"`
@@ -71,14 +74,14 @@ const (
 // StageRecord retains the interval and result of a stage. ParentID refers to
 // another stage or Snapshot.RootStageID. FinishedAt is zero while work is running.
 type StageRecord struct {
-	ID         StageID   `json:"id"`
-	ParentID   StageID   `json:"parent_id"`
-	Name       string    `json:"name"`
-	StartedAt  time.Time `json:"started_at"`
-	FinishedAt time.Time `json:"finished_at,omitempty"`
-	Status     Status    `json:"status"`
-	Error      string    `json:"error,omitempty"`
-	Fields     []Field   `json:"fields,omitempty"`
+	ID         StageID                    `json:"id"`
+	ParentID   StageID                    `json:"parent_id"`
+	Name       string                     `json:"name"`
+	StartedAt  time.Time                  `json:"started_at"`
+	FinishedAt time.Time                  `json:"finished_at,omitempty"`
+	Status     Status                     `json:"status"`
+	Error      string                     `json:"error,omitempty"`
+	Fields     map[string]json.RawMessage `json:"fields,omitempty"`
 }
 
 // Duration measures a finished interval, or a running interval at capturedAt.
@@ -88,21 +91,24 @@ func (s StageRecord) Duration(capturedAt time.Time) time.Duration {
 
 // Snapshot is a detached view. Stages are ordered by start time, then ID;
 // overlapping intervals stay overlapping rather than being added together.
-// Complete means preceding records were collected, not that the work ended.
+// Complete means preceding records were collected without field encoding errors,
+// not that the work ended.
 // CapturedAt is frozen at FinishedAt once a final snapshot is complete.
-// Field values retain the shallow-copy contract described by Field.
+// All slices and JSON field values belong to this snapshot. Standard json.Marshal
+// and json.Unmarshal persist it without a backend or a caller-defined DTO.
+// Times use time.Time JSON encoding (RFC 3339); zero FinishedAt means running.
 type Snapshot struct {
-	ID          string        `json:"id"`
-	RootStageID StageID       `json:"root_stage_id"`
-	Operation   string        `json:"operation"`
-	StartedAt   time.Time     `json:"started_at"`
-	FinishedAt  time.Time     `json:"finished_at,omitempty"`
-	CapturedAt  time.Time     `json:"captured_at"`
-	Status      Status        `json:"status"`
-	Error       string        `json:"error,omitempty"`
-	Fields      []Field       `json:"fields,omitempty"`
-	Stages      []StageRecord `json:"stages,omitempty"`
-	Complete    bool          `json:"complete"`
+	ID          string                     `json:"id"`
+	RootStageID StageID                    `json:"root_stage_id"`
+	Operation   string                     `json:"operation"`
+	StartedAt   time.Time                  `json:"started_at"`
+	FinishedAt  time.Time                  `json:"finished_at,omitempty"`
+	CapturedAt  time.Time                  `json:"captured_at"`
+	Status      Status                     `json:"status"`
+	Error       string                     `json:"error,omitempty"`
+	Fields      map[string]json.RawMessage `json:"fields,omitempty"`
+	Stages      []StageRecord              `json:"stages,omitempty"`
+	Complete    bool                       `json:"complete"`
 }
 
 func (s Snapshot) Duration() time.Duration {

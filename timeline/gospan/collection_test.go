@@ -2,6 +2,7 @@ package gospantimeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"reflect"
@@ -92,12 +93,12 @@ func TestCheckpointAttributeDoesNotCollideWithUserFields(t *testing.T) {
 	_, stage := tl.Begin(ctx, "work", timeline.Field{Key: checkpointKey, Value: "user value"})
 	stage.End(nil)
 	for range 3 {
-		if s, err := tl.Snapshot(context.Background()); err != nil || len(s.Fields) != 1 || s.Fields[0].Value != uint64(999) {
+		if s, err := tl.Snapshot(context.Background()); err != nil || len(s.Fields) != 1 || string(s.Fields[checkpointKey]) != "999" {
 			t.Fatalf("checkpoint leaked into user fields: %+v err=%v", s, err)
 		}
 	}
 	s, err := tl.Finish(context.Background(), nil)
-	if err != nil || s.Stages[0].Fields[0].Value != "user value" {
+	if err != nil || string(s.Stages[0].Fields[checkpointKey]) != `"user value"` {
 		t.Fatalf("user field was consumed as a checkpoint: %+v err=%v", s, err)
 	}
 }
@@ -128,12 +129,12 @@ func TestConstructorIsolatesForeignGospanContext(t *testing.T) {
 
 func TestProjectionCopiesBatchFields(t *testing.T) {
 	p := newProjection(t.Name())
-	attrs := []slog.Attr{slog.Any("key", fieldValue{value: "before"})}
+	attrs := []slog.Attr{slog.Any("key", fieldValue{value: json.RawMessage(`"before"`)})}
 	if err := p.WriteBatch(gospan.Batch{Events: []gospan.Event{{Kind: gospan.EventStart, SpanID: 1, Name: "root", StartNS: time.Now().UnixNano(), Attrs: attrs}}}); err != nil {
 		t.Fatal(err)
 	}
-	attrs[0] = slog.Any("key", fieldValue{value: "reused buffer"})
-	if got := p.snapshot(true).Fields[0].Value; got != "before" {
+	attrs[0] = slog.Any("key", fieldValue{value: json.RawMessage(`"reused buffer"`)})
+	if got := p.snapshot(true).Fields["key"]; string(got) != `"before"` {
 		t.Fatalf("retained gospan batch memory: %v", got)
 	}
 }
