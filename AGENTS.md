@@ -8,8 +8,9 @@ Go stdlib 扩展库，长期对标 Java 里 Guava 的位置——项目手写 he
 
 子包镜像 stdlib 命名（`slicesx` / `stringsx` / `osx` / `ptrx` / `filepathx` / `tarx` / `shellx` / `randx` / `uuid`），调用点读起来像它扩展的那个标准库。一包一职责，包内保持小。
 
-`timeline` 定义操作、阶段与快照契约；`timeline/gospan` 提供进程内记录实现，拥有
-事件汇总、快照同步与 writer 生命周期。业务关联和历史观测归调用方，公共接口不暴露
+`timeline` 定义操作、阶段与快照契约，并用 Registry 管理进程内活跃实例；
+`timeline/gospan` 提供记录实现，拥有事件汇总、快照同步与 writer 生命周期。
+ID 的生成、业务含义和完成决策归调用方，公共接口不暴露
 backend 类型。设计与完成边界见 `docs/timeline.md`。
 
 ## 关键约定

@@ -46,7 +46,8 @@ func TestFieldValueLastValueAndType(t *testing.T) {
 }
 
 func TestFinalFieldsAndResultAreAtomic(t *testing.T) {
-	ctx, tl, err := gospantimeline.New(context.Background(), "operation")
+	ctx := context.Background()
+	tl, err := gospantimeline.New(ctx, t.Name(), "operation")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,13 +81,13 @@ func TestFinalFieldsAndResultAreAtomic(t *testing.T) {
 func TestNoopRetainsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	got, stage := timeline.Noop().Begin(ctx, "disabled")
+	got, stage := timeline.Noop("disabled-operation").Begin(ctx, "disabled")
 	if got != ctx || got.Err() != context.Canceled {
 		t.Fatal("changed context")
 	}
 	stage.End(nil)
-	snapshot, err := timeline.Noop().Finish(ctx, nil)
-	if err != nil || !snapshot.Complete || len(snapshot.Stages) != 0 {
+	snapshot, err := timeline.Noop("disabled-operation").Finish(ctx, nil)
+	if err != nil || snapshot.ID != "disabled-operation" || !snapshot.Complete || len(snapshot.Stages) != 0 {
 		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
 	}
 }

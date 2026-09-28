@@ -25,7 +25,7 @@ func (s gatedSink) WriteBatch(batch gospan.Batch) error {
 }
 
 func TestCollectionDeadlineAndFinishRetry(t *testing.T) {
-	sink := newProjection()
+	sink := newProjection(t.Name())
 	gate := make(chan struct{})
 	tracer, err := gospan.New(gatedSink{projection: sink, gate: gate}, gospan.WithBlockingPolicy())
 	if err != nil {
@@ -41,17 +41,34 @@ func TestCollectionDeadlineAndFinishRetry(t *testing.T) {
 		_ = tracer.Close(context.Background())
 	}()
 	rootCtx, root := tracer.Start(context.Background(), "delayed")
-	tl := &recorder{tracer: tracer, root: root, rootCtx: rootCtx, sink: sink}
+	registry := timeline.NewRegistry(func(context.Context, string, string, ...timeline.Field) (timeline.Timeline, error) {
+		return &recorder{tracer: tracer, root: root, rootCtx: rootCtx, sink: sink}, nil
+	})
+	tl, err := registry.Create(context.Background(), t.Name(), "delayed")
+	if err != nil {
+		t.Fatal(err)
+	}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	partial, err := tl.Snapshot(canceled)
-	if !errors.Is(err, context.Canceled) || partial.Complete {
+	if !errors.Is(err, context.Canceled) || partial.Complete || partial.ID != tl.ID() {
 		t.Fatalf("uncollected snapshot claimed success: %+v err=%v", partial, err)
 	}
+	_, stage := tl.Begin(context.Background(), "active")
+	if _, err := tl.Finish(canceled, nil); !errors.Is(err, timeline.ErrActiveStages) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("active stage and collection errors = %v", err)
+	}
+	if got, ok := registry.Lookup(tl.ID()); !ok || got != tl {
+		t.Fatal("active timeline was removed")
+	}
+	stage.End(nil)
 	operationErr := errors.New("business failure")
 	partial, err = tl.Finish(canceled, operationErr)
 	if !errors.Is(err, context.Canceled) || partial.Complete {
 		t.Fatalf("uncollected finish claimed success: %+v err=%v", partial, err)
+	}
+	if _, ok := registry.Lookup(tl.ID()); ok {
+		t.Fatal("sealed timeline retained after collection timeout")
 	}
 	close(gate)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -67,7 +84,8 @@ func TestCollectionDeadlineAndFinishRetry(t *testing.T) {
 }
 
 func TestCheckpointAttributeDoesNotCollideWithUserFields(t *testing.T) {
-	ctx, tl, err := New(context.Background(), "fields", timeline.Field{Key: checkpointKey, Value: uint64(999)})
+	ctx := context.Background()
+	tl, err := New(ctx, t.Name(), "fields", timeline.Field{Key: checkpointKey, Value: uint64(999)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,21 +103,21 @@ func TestCheckpointAttributeDoesNotCollideWithUserFields(t *testing.T) {
 }
 
 func TestConstructorIsolatesForeignGospanContext(t *testing.T) {
-	foreign, err := gospan.New(newProjection())
+	foreign, err := gospan.New(newProjection(t.Name()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Use no attributes: this foreign tracer only tests context isolation.
 	ctx, root := foreign.Start(context.Background(), "foreign")
 	defer func() { root.End(); _ = foreign.Close(context.Background()) }()
-	ctx, tl, err := New(ctx, "own")
+	tl, err := New(ctx, t.Name(), "own")
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, stage := tl.Begin(ctx, "child")
 	stage.End(nil)
 	s, err := tl.Finish(context.Background(), nil)
-	if err != nil || s.Operation != "own" || len(s.Stages) != 1 || s.Stages[0].ParentID != s.ID {
+	if err != nil || s.Operation != "own" || len(s.Stages) != 1 || s.Stages[0].ParentID != s.RootStageID {
 		t.Fatalf("foreign tracer corrupted root: %+v err=%v", s, err)
 	}
 	stats := tl.(*recorder).tracer.Stats()
@@ -109,7 +127,7 @@ func TestConstructorIsolatesForeignGospanContext(t *testing.T) {
 }
 
 func TestProjectionCopiesBatchFields(t *testing.T) {
-	p := newProjection()
+	p := newProjection(t.Name())
 	attrs := []slog.Attr{slog.Any("key", fieldValue{value: "before"})}
 	if err := p.WriteBatch(gospan.Batch{Events: []gospan.Event{{Kind: gospan.EventStart, SpanID: 1, Name: "root", StartNS: time.Now().UnixNano(), Attrs: attrs}}}); err != nil {
 		t.Fatal(err)

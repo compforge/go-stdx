@@ -10,7 +10,8 @@ import (
 )
 
 func ExampleNew() {
-	ctx, tl, err := gospantimeline.New(context.Background(), "sandbox.start",
+	ctx := context.Background()
+	tl, err := gospantimeline.New(ctx, "start-42", "sandbox.start",
 		timeline.Field{Key: "sandbox_id", Value: "sandbox-1"})
 	if err != nil {
 		panic(err)
@@ -28,9 +29,11 @@ func ExampleNew() {
 	if err != nil {
 		panic(err)
 	}
+	fmt.Println(tl.ID() == result.ID)
 	fmt.Println(result.Operation, result.Status, result.Complete)
 	fmt.Println(result.Stages[1].ParentID == result.Stages[0].ID)
 	// Output:
+	// true
 	// sandbox.start succeeded true
 	// true
 }

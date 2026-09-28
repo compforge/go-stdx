@@ -15,7 +15,8 @@ import (
 
 func newTimeline(t *testing.T) (context.Context, timeline.Timeline) {
 	t.Helper()
-	ctx, tl, err := gospantimeline.New(context.Background(), "operation", timeline.Field{Key: "attempt", Value: 1})
+	ctx := context.Background()
+	tl, err := gospantimeline.New(ctx, t.Name(), "operation", timeline.Field{Key: "attempt", Value: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +51,7 @@ func TestNestedAndOverlappingStages(t *testing.T) {
 		t.Fatalf("running snapshot = %+v", partial)
 	}
 	p, c, s := partial.Stages[0], partial.Stages[1], partial.Stages[2]
-	if p.ParentID != partial.ID || c.ParentID != p.ID || s.ParentID != partial.ID {
+	if p.ParentID != partial.RootStageID || c.ParentID != p.ID || s.ParentID != partial.RootStageID {
 		t.Fatalf("lost parent relationships: %+v", partial.Stages)
 	}
 	child.End(nil)
@@ -126,17 +127,17 @@ func TestFinishRejectsActiveStagesThenFreezesFirstResult(t *testing.T) {
 
 func TestCancellationDoesNotOwnOperationLifetime(t *testing.T) {
 	requestCtx, cancel := context.WithCancel(context.Background())
-	ctx, tl, err := gospantimeline.New(requestCtx, "detached")
+	tl, err := gospantimeline.New(requestCtx, t.Name(), "detached")
 	if err != nil {
 		t.Fatal(err)
 	}
-	stageCtx, stage := tl.Begin(ctx, "background")
+	stageCtx, stage := tl.Begin(requestCtx, "background")
 	cancel()
 	if stageCtx.Err() != context.Canceled {
 		t.Fatal("stage context lost request cancellation")
 	}
-	if got, ok := timeline.FromContext(stageCtx); !ok || got != tl {
-		t.Fatal("stage context lost timeline identity")
+	if _, ok := timeline.FromContext(stageCtx); ok {
+		t.Fatal("Begin implicitly bound a timeline to context")
 	}
 	if got := snapshot(t, tl); got.Status != timeline.Running || got.Stages[0].Status != timeline.Running {
 		t.Fatal("request cancellation prematurely finished the operation")
@@ -154,17 +155,17 @@ func TestCancellationDoesNotOwnOperationLifetime(t *testing.T) {
 
 func TestForeignTimelineContextCreatesIndependentRoot(t *testing.T) {
 	ctx, first := newTimeline(t)
-	foreignCtx, parent := first.Begin(ctx, "foreign")
+	foreignCtx, parent := first.Begin(timeline.NewContext(ctx, first), "foreign")
 	_, second := newTimeline(t)
 	childCtx, child := second.Begin(foreignCtx, "own")
 	child.End(nil)
 	parent.End(nil)
 	got := snapshot(t, second)
-	if len(got.Stages) != 1 || got.Stages[0].ParentID != got.ID {
+	if len(got.Stages) != 1 || got.Stages[0].ParentID != got.RootStageID {
 		t.Fatalf("foreign IDs contaminated timeline: %+v", got)
 	}
-	if owner, _ := timeline.FromContext(childCtx); owner != second {
-		t.Fatal("child carries the wrong timeline")
+	if owner, _ := timeline.FromContext(childCtx); owner != first {
+		t.Fatal("Begin replaced the caller's optional context binding")
 	}
 }
 
@@ -189,7 +190,7 @@ func TestConcurrentStagesAndSnapshots(t *testing.T) {
 		t.Fatalf("lost concurrent stages: count=%d err=%v", len(final.Stages), err)
 	}
 	parents := make(map[timeline.StageID]bool)
-	parents[final.ID] = true
+	parents[final.RootStageID] = true
 	for _, stage := range final.Stages {
 		if stage.Status != timeline.Succeeded || !parents[stage.ParentID] {
 			t.Fatalf("unfinished or orphaned stage: %+v", stage)

@@ -13,6 +13,9 @@ import (
 // concurrent use. The completion owner must end every stage and call Finish,
 // even after the original request has been canceled.
 type Timeline interface {
+	// ID is the immutable, caller-supplied identity of this operation.
+	// Its meaning and uniqueness scope belong to the caller.
+	ID() string
 	// SetFields merges operation fields while it is open; updates after Finish are ignored.
 	SetFields(fields ...Field)
 	// Begin starts a stage beneath the stage carried by ctx, or beneath the
@@ -42,6 +45,8 @@ type Stage interface {
 	End(err error, fields ...Field)
 }
 
+var ErrEmptyID = errors.New("timeline: ID must not be empty")
+
 var ErrActiveStages = errors.New("timeline: operation still has active stages")
 
 // Field attaches a value to an operation or stage. Field slices are copied;
@@ -64,7 +69,7 @@ const (
 )
 
 // StageRecord retains the interval and result of a stage. ParentID refers to
-// another stage or Snapshot.ID. FinishedAt is zero while work is running.
+// another stage or Snapshot.RootStageID. FinishedAt is zero while work is running.
 type StageRecord struct {
 	ID         StageID   `json:"id"`
 	ParentID   StageID   `json:"parent_id"`
@@ -87,16 +92,17 @@ func (s StageRecord) Duration(capturedAt time.Time) time.Duration {
 // CapturedAt is frozen at FinishedAt once a final snapshot is complete.
 // Field values retain the shallow-copy contract described by Field.
 type Snapshot struct {
-	ID         StageID       `json:"id"`
-	Operation  string        `json:"operation"`
-	StartedAt  time.Time     `json:"started_at"`
-	FinishedAt time.Time     `json:"finished_at,omitempty"`
-	CapturedAt time.Time     `json:"captured_at"`
-	Status     Status        `json:"status"`
-	Error      string        `json:"error,omitempty"`
-	Fields     []Field       `json:"fields,omitempty"`
-	Stages     []StageRecord `json:"stages,omitempty"`
-	Complete   bool          `json:"complete"`
+	ID          string        `json:"id"`
+	RootStageID StageID       `json:"root_stage_id"`
+	Operation   string        `json:"operation"`
+	StartedAt   time.Time     `json:"started_at"`
+	FinishedAt  time.Time     `json:"finished_at,omitempty"`
+	CapturedAt  time.Time     `json:"captured_at"`
+	Status      Status        `json:"status"`
+	Error       string        `json:"error,omitempty"`
+	Fields      []Field       `json:"fields,omitempty"`
+	Stages      []StageRecord `json:"stages,omitempty"`
+	Complete    bool          `json:"complete"`
 }
 
 func (s Snapshot) Duration() time.Duration {
@@ -115,11 +121,14 @@ func interval(start, end, captured time.Time) time.Duration {
 
 type contextKey struct{}
 
-// NewContext carries t without changing ctx's lifetime.
+// NewContext optionally carries t without changing ctx's lifetime.
+// Passing Timeline directly as a function argument needs no context binding.
 func NewContext(ctx context.Context, t Timeline) context.Context {
 	return context.WithValue(ctx, contextKey{}, t)
 }
 
+// FromContext retrieves a Timeline explicitly attached with NewContext.
+// Constructors and Begin do not attach or replace this value.
 func FromContext(ctx context.Context) (Timeline, bool) {
 	if ctx == nil {
 		return nil, false

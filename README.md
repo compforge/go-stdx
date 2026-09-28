@@ -47,12 +47,13 @@ Used by [case-code-review](https://github.com/qiankunli/case-code-review), [host
 ## Operation timelines
 
 Use `timeline.Timeline` in application code and choose `timeline/gospan` at the
-construction boundary. One timeline represents one operation; stages can nest,
+construction boundary. Supply a stable ID for each operation; the caller defines
+its meaning and uniqueness scope. One timeline represents one operation; stages can nest,
 overlap, and finish on different goroutines. A snapshot includes each stage's
 interval, parent, attributes and result, so parallel work stays visible.
 
 ```go
-ctx, tl, err := gospantimeline.New(ctx, "sandbox.start")
+tl, err := gospantimeline.New(ctx, operationID, "sandbox.start")
 if err != nil {
 	return err
 }
@@ -70,6 +71,16 @@ Import the backend as
 `gospantimeline "github.com/compforge/go-stdx/timeline/gospan"`. Use
 `tl.Snapshot(ctx)` to inspect running work without stopping it. The completion
 owner ends all stages and calls `Finish`, even if the requesting client has left.
+Pass the timeline directly to business functions. `NewContext` / `FromContext`
+are optional helpers; neither constructors nor `Begin` bind the instance for you.
+
+For components without a direct call chain, share a process-local
+`timeline.NewRegistry(gospantimeline.New)`: the owner calls
+`Create(ctx, operationID, "sandbox.start")`, and collaborators call
+`Lookup(operationID)`. The registry rejects duplicate active IDs and removes
+sealed operations when `Finish` returns. It does not aggregate across processes.
+See the executable [registry example](timeline/example_test.go).
+
 No external collector or global tracer is needed. See the executable
 [example](timeline/gospan/example_test.go) and [lifecycle and snapshot contract](docs/timeline.md).
 
