@@ -20,7 +20,7 @@ Subpackages mirror stdlib naming so call sites read like the standard library th
 | `netx` | `IsDNSHostname` — ASCII DNS hostname syntax without IP literals | `net` parses IP addresses but does not export hostname validation |
 | `randx` | `Hex(n)` — n random bytes as lowercase hex | the "short random id" helper every daemon re-writes |
 | `uuid` | `New`, `NewWithPrefix`, `V4`, `V7`, `V7Hex` — resource / random / time-ordered ids | thin wrappers over `google/uuid` for the resource ID, string, and dashless-hex shapes services keep re-wrapping |
-| `timeline` | concurrent operation steps and detached snapshots | `context` and `time` provide propagation and clocks, but do not retain an export-neutral operation timeline |
+| `timeline` | operation/stage interfaces and detached, structured snapshots | retains overlapping intervals, hierarchy and results; [`timeline/gospan`](timeline/gospan) supplies the recording implementation |
 
 Rules of the house:
 
@@ -43,6 +43,35 @@ ids := slicesx.Uniq(rawIDs)
 ```
 
 Used by [case-code-review](https://github.com/qiankunli/case-code-review), [hostel](https://github.com/qiankunli/hostel), and other Go projects under this account.
+
+## Operation timelines
+
+Use `timeline.Timeline` in application code and choose `timeline/gospan` at the
+construction boundary. One timeline represents one operation; stages can nest,
+overlap, and finish on different goroutines. A snapshot includes each stage's
+interval, parent, attributes and result, so parallel work stays visible.
+
+```go
+ctx, tl, err := gospantimeline.New(ctx, "sandbox.start")
+if err != nil {
+	return err
+}
+prepareCtx, prepare := tl.Begin(ctx, "prepare")
+operationErr := prepareSandbox(prepareCtx, tl)
+prepare.End(operationErr)
+
+collectCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+defer cancel()
+snapshot, captureErr := tl.Finish(collectCtx, operationErr)
+// Handle captureErr separately from operationErr; export snapshot as needed.
+```
+
+Import the backend as
+`gospantimeline "github.com/compforge/go-stdx/timeline/gospan"`. Use
+`tl.Snapshot(ctx)` to inspect running work without stopping it. The completion
+owner ends all stages and calls `Finish`, even if the requesting client has left.
+No external collector or global tracer is needed. See the executable
+[example](timeline/gospan/example_test.go) and [lifecycle and snapshot contract](docs/timeline.md).
 
 ## License
 
