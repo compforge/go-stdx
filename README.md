@@ -112,7 +112,9 @@ carry a serializable parent reference across process boundaries.
 
 `Snapshot.Collection.LocalFlushed` and `StoreRead` describe this handle's flush and
 backend read. Neither claims all producers have reported. Actor is optional;
-omitting it does not change recording, and empty actor data is omitted from JSON.
+omitting it does not change recording. Document and Snapshot JSON deduplicate actors
+into a payload-local `actors` table with 1-based stage `actor_ref` values; decoding
+restores full Actor values. Standalone Stage JSON remains self-contained.
 
 See the [executable shared-store example](timeline/shared_example_test.go) and
 [lifecycle, storage and collection contract](docs/timeline.md).

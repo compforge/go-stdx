@@ -109,6 +109,8 @@ func (s Stage) Duration(capturedAt time.Time) time.Duration {
 // read does not prove all processes have flushed or that no late stage remains.
 // All slices and JSON field values belong to this snapshot. Standard json.Marshal
 // and json.Unmarshal persist it without a backend or a caller-defined DTO.
+// JSON stores actors once in a payload-local table; stage actor_ref values are
+// resolved back to full Actors when decoding.
 // Times use time.Time JSON encoding (RFC 3339); zero FinishedAt means running.
 type Snapshot struct {
 	ID          string                     `json:"id"`
