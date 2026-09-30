@@ -243,3 +243,63 @@ func TestRecordCompletesKnownStartWithoutCallerRevision(t *testing.T) {
 		t.Fatal("replay modified terminal interval")
 	}
 }
+
+// Missing parent data must not block a component's own recording. Preserving
+// the reference allows an independently reported parent to arrive later.
+func TestStagesAcceptAbsentParentAndRetainLateAssociation(t *testing.T) {
+	recordingBackends(t, func(t *testing.T, tl timeline.Timeline) {
+		ctx := context.Background()
+		parentID := timeline.StageID("late-parent")
+		imported := completedStage()
+		imported.ParentID = parentID
+		if err := tl.Record(imported); err != nil {
+			t.Fatal(err)
+		}
+		live := tl.Begin("live-child", timeline.WithParent(parentID))
+		live.End(nil)
+		if err := tl.Flush(ctx); err != nil {
+			t.Fatal(err)
+		}
+		before, err := tl.Snapshot(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(before.Stages) != 2 {
+			t.Fatalf("lost children before parent arrived: %+v", before.Stages)
+		}
+		for _, stage := range before.Stages {
+			if stage.ParentID != parentID {
+				t.Fatalf("missing parent reference rewritten: %+v", stage)
+			}
+		}
+		if !strings.Contains(before.Summary(), imported.Name) || !strings.Contains(before.Summary(), "live-child") {
+			t.Fatalf("unresolved children missing from summary: %s", before.Summary())
+		}
+		parent := completedStage()
+		parent.ID, parent.Name = parentID, "parent"
+		if err := tl.Record(parent); err != nil {
+			t.Fatal(err)
+		}
+		after, err := tl.Snapshot(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(after.Stages) != 3 {
+			t.Fatalf("lost late parent or children: %+v", after.Stages)
+		}
+		parentFound := false
+		for _, stage := range after.Stages {
+			if stage.ID == parentID {
+				parentFound = true
+				if stage.ParentID != after.RootStageID {
+					t.Fatalf("omitted parent must default to root: %+v", stage)
+				}
+			} else if stage.ParentID != parentID {
+				t.Fatalf("late association lost: %+v", stage)
+			}
+		}
+		if !parentFound {
+			t.Fatal("late parent was not recorded")
+		}
+	})
+}

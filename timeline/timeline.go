@@ -16,7 +16,8 @@ import (
 type Timeline interface {
 	// Record copies and buffers a completed stage. It performs no IO; Flush
 	// confirms persistence. ID, name, actual start/end times and a terminal status
-	// must be supplied. ParentID defaults to the operation root; Actor is preserved.
+	// must be supplied. An omitted ParentID defaults to the root; a supplied parent
+	// need not exist and is preserved for later association. Actor is preserved.
 	// Repeated identical IDs are idempotent; conflicting persisted facts fail Flush.
 	Record(Stage) error
 	// Flush confirms this handle's preceding records reached its backend.

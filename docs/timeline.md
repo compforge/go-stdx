@@ -46,6 +46,9 @@ Begin 不需要 context，WithParent 显式指定父阶段，StageHandle.ID 返�
 BeginContext 是可选适配：继承同一 timeline 的 StageRef，保留取消和截止时间，
 返回携带新 StageRef 的 context，不隐式绑定 Timeline。StageFromContext /
 NewStageContext 可以跨进程传递纯数据父引用；没有父引用时挂在操作根下。
+ParentID 是关联线索，记录时不查询或要求父 stage 已存在，子 stage 可以先于父 stage
+上报。已提供的 ParentID 原样保留，读取时按已有数据关联；展示时未能关联的 stage
+可以平铺或归到 root，不丢弃其事实，也不要求 caller 先确认父 stage。
 
 Begin、SetFields、End、Record 只编码并缓存事实，不执行远端 IO。End 第一次决定
 阶段结果，后续调用不修改它。WithStartTime / WithEndTime 接收真实来源时间；未指定

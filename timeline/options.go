@@ -14,7 +14,11 @@ type StageOption func(*Stage) error
 type EndOption func(*Stage) error
 
 func WithStageID(id StageID) StageOption { return func(s *Stage) error { s.ID = id; return nil } }
-func WithParent(id StageID) StageOption  { return func(s *Stage) error { s.ParentID = id; return nil } }
+
+// WithParent records an association without looking up or requiring the parent.
+// The ID is preserved even when the parent is absent or arrives later; callers
+// can link available stages when reading and display unresolved stages at the root.
+func WithParent(id StageID) StageOption { return func(s *Stage) error { s.ParentID = id; return nil } }
 func WithStartTime(at time.Time) StageOption {
 	return func(s *Stage) error { s.StartedAt = at; return nil }
 }
