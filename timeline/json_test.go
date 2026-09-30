@@ -23,7 +23,7 @@ func actorDocument() timeline.Document {
 		doc.Stages = append(doc.Stages, timeline.StageUpdate{Revision: uint64(i + 1), Stage: timeline.Stage{
 			ID: timeline.StageID(fmt.Sprint(i)), ParentID: doc.RootStageID, Name: "step", Actor: actor,
 			StartedAt: at.Add(time.Duration(i) * time.Second), FinishedAt: at.Add(time.Duration(i+1) * time.Second), Elapsed: time.Second,
-			Status: timeline.Failed, Error: "source failure", Fields: map[string]json.RawMessage{"count": json.RawMessage(`18446744073709551615`)},
+			Status: timeline.Failed, Error: "source failure", Code: "ResourceQuotaExceeded", Fields: map[string]json.RawMessage{"count": json.RawMessage(`18446744073709551615`)},
 		}})
 	}
 	return doc

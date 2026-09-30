@@ -59,7 +59,7 @@ func TestFinalFieldsAndResultAreAtomic(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			stage.End(errors.New(value), timeline.WithEndFields(timeline.Field{Key: "result", Value: value}))
+			stage.End(errors.New(value), timeline.WithCode(value), timeline.WithEndFields(timeline.Field{Key: "result", Value: value}))
 		}()
 	}
 	wg.Wait()
@@ -68,7 +68,7 @@ func TestFinalFieldsAndResultAreAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := final.Stages[0]
-	if v, _ := timeline.FieldValue[string](r.Fields, "result"); v != r.Error {
+	if v, _ := timeline.FieldValue[string](r.Fields, "result"); v != r.Error || r.Code != r.Error {
 		t.Fatalf("mixed winners: %+v", r)
 	}
 	tl.SetFields(timeline.Field{Key: "runtime", Value: "bed"})

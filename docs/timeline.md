@@ -10,6 +10,12 @@ Stage 是一段实际工作或等待的纯数据；StageHandle 是 Begin 返回�
 现场执行用 Begin/End，已经拿到真实起止时间的组件用 Record(Stage) 完整补录。
 两条路径产生相同的 Stage，Snapshot.Stages 可以直接 JSON 序列化。
 
+Code 是可选的 caller 约定字段，其含义独立于 Status 和 Error。现场记录使用
+`stage.End(err, timeline.WithCode("ResourceQuotaExceeded"))`，成功结果也可使用
+`stage.End(nil, timeline.WithCode("Cached"))`；补录时直接设置 Stage.Code。
+SDK 原样保存 code，不解释其含义，也不据此决定阶段或操作的成功失败；补充详情仍放 Fields。
+未提供时 JSON 省略 code，旧数据读取为空字符串。
+
 Begin 默认生成独立 UUID，也可用 WithStageID 指定稳定身份。业务重试产生新阶段；
 写入重试沿用同一份身份和内容。一个运行阶段由执行方更新；多实例通常分别创建
 阶段，重复采集同一外部事实则用稳定 ID 去重，不任意竞争覆盖同一个阶段。

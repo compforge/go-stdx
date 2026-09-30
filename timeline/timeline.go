@@ -93,6 +93,9 @@ type Stage struct {
 	Status     Status                     `json:"status"`
 	Error      string                     `json:"error,omitempty"`
 	Fields     map[string]json.RawMessage `json:"fields,omitempty"`
+	// Code is an optional caller-defined value, independent of Status and Error.
+	// Timeline records it without inferring or interpreting its meaning.
+	Code string `json:"code,omitempty"`
 }
 
 // Duration measures a finished interval, or a running interval at capturedAt.

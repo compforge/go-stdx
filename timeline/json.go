@@ -19,6 +19,7 @@ type stageJSON struct {
 	FinishedAt time.Time                  `json:"finished_at,omitempty"`
 	Status     Status                     `json:"status"`
 	Error      string                     `json:"error,omitempty"`
+	Code       string                     `json:"code,omitempty"`
 	Fields     map[string]json.RawMessage `json:"fields,omitempty"`
 }
 
@@ -64,7 +65,7 @@ func (t *actorTable) encode(stage Stage) stageJSON {
 	return stageJSON{
 		ID: stage.ID, ParentID: stage.ParentID, ActorRef: ref,
 		Elapsed: stage.Elapsed, Name: stage.Name, StartedAt: stage.StartedAt,
-		FinishedAt: stage.FinishedAt, Status: stage.Status, Error: stage.Error, Fields: stage.Fields,
+		FinishedAt: stage.FinishedAt, Status: stage.Status, Error: stage.Error, Code: stage.Code, Fields: stage.Fields,
 	}
 }
 
@@ -79,7 +80,7 @@ func (s stageJSON) decode(actors []Actor) (Stage, error) {
 	return Stage{
 		ID: s.ID, ParentID: s.ParentID, Actor: actor,
 		Elapsed: s.Elapsed, Name: s.Name, StartedAt: s.StartedAt,
-		FinishedAt: s.FinishedAt, Status: s.Status, Error: s.Error, Fields: s.Fields,
+		FinishedAt: s.FinishedAt, Status: s.Status, Error: s.Error, Code: s.Code, Fields: s.Fields,
 	}, nil
 }
 

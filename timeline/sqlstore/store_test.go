@@ -60,7 +60,11 @@ func TestIndependentProcessesContributeStages(t *testing.T) {
 		if err := tl.Flush(ctx); err != nil {
 			t.Fatal(err)
 		}
-		stage.End(nil)
+		if id == "worker-0" {
+			stage.End(errors.New("quota exceeded"), timeline.WithCode("ResourceQuotaExceeded"))
+		} else {
+			stage.End(nil, timeline.WithCode("Reused"))
+		}
 		if err := tl.Flush(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -120,7 +124,14 @@ func TestIndependentProcessesContributeStages(t *testing.T) {
 			continue
 		}
 		actors[stage.Actor.ID] = true
-		if stage.ParentID != ref.StageID || stage.Status != timeline.Succeeded || stage.Elapsed <= 0 || stage.Actor.Name != "pod-"+stage.Actor.ID {
+		wantStatus, wantCode, wantError := timeline.Succeeded, "Reused", ""
+		if stage.Actor.ID == "worker-0" {
+			wantStatus, wantCode, wantError = timeline.Failed, "ResourceQuotaExceeded", "quota exceeded"
+		}
+		if stage.Code != wantCode || stage.Error != wantError {
+			t.Fatalf("cross-process stage result lost: %+v", stage)
+		}
+		if stage.ParentID != ref.StageID || stage.Status != wantStatus || stage.Elapsed <= 0 || stage.Actor.Name != "pod-"+stage.Actor.ID {
 			t.Fatalf("stage: %+v", stage)
 		}
 	}
@@ -132,6 +143,10 @@ func TestIndependentProcessesContributeStages(t *testing.T) {
 	restored, err := reader.Snapshot(ctx)
 	if err != nil || restored.FinishedAt != snapshot.FinishedAt || len(restored.Stages) != len(snapshot.Stages) {
 		t.Fatalf("reopen: %+v %v", restored, err)
+	}
+	failed, ok := restored.LatestFailedStage()
+	if !ok || failed.Code != "ResourceQuotaExceeded" {
+		t.Fatalf("reopened error code lost: %+v", failed)
 	}
 	// A contributor may legitimately arrive after the business terminal record.
 	_, late := timeline.BeginContext(ctx, reader, "late_report")

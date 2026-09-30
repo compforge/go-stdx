@@ -101,6 +101,10 @@ func (p *projection) WriteBatch(batch gospan.Batch) error {
 			record.ParentID, record.Actor, record.StartedAt = data.ParentID, data.Actor, data.StartedAt
 			if !data.FinishedAt.IsZero() {
 				record.FinishedAt, record.Elapsed = data.FinishedAt, data.Elapsed
+				// The boundary precedes EventEnd; publish the code with its result.
+				if record.Status != timeline.Running {
+					record.Code = data.Code
+				}
 			}
 		}
 	}
