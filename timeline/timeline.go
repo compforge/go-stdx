@@ -16,7 +16,8 @@ import (
 type Timeline interface {
 	// Record copies and buffers a completed stage. It performs no IO; Flush
 	// confirms persistence. ID, name, actual start/end times and a terminal status
-	// must be supplied. ParentID defaults to the operation root; Actor is preserved.
+	// must be supplied. An omitted ParentID defaults to the root; a supplied parent
+	// need not exist and is preserved for later association. Actor is preserved.
 	// Repeated identical IDs are idempotent; conflicting persisted facts fail Flush.
 	Record(Stage) error
 	// Flush confirms this handle's preceding records reached its backend.
@@ -41,8 +42,12 @@ type Timeline interface {
 	Finish(ctx context.Context, operationErr error) (Snapshot, error)
 }
 
-// StageHandle represents running work or a wait. It may end on a different goroutine
-// from the one that began it. A parent may end before its children.
+// StageHandle represents running work or a wait. A leaf stage is the basic
+// recording unit of one component's execution flow: callers should begin and end
+// it in the same goroutine. Parallel execution flows contribute separate stages.
+// A parent stage may group parallel child stages across components; its own
+// lifecycle remains owned by the coordinating component. A parent may end before
+// its children.
 type StageHandle interface {
 	ID() StageID
 	// SetFields merges attributes; the last value for a key wins.
@@ -80,8 +85,10 @@ const (
 	Canceled  Status = "canceled"
 )
 
-// Stage retains the interval and result of a stage. ParentID refers to
-// another stage or Snapshot.RootStageID. FinishedAt is zero while work is running.
+// Stage retains the interval and result of work or a wait. Leaf stages represent
+// one component's execution flow; parent stages may group parallel child stages.
+// ParentID refers to another stage or Snapshot.RootStageID. FinishedAt is zero
+// while work is running.
 type Stage struct {
 	ID         StageID                    `json:"id"`
 	ParentID   StageID                    `json:"parent_id"`

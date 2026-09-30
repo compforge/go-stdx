@@ -7,6 +7,9 @@ stage，通过共享 Store 汇总。ID 的生成、业务含义和唯一性范�
 sandbox、conversation 等业务概念。New 只构造句柄，不查询远端，不重置已有操作。
 
 Stage 是一段实际工作或等待的纯数据；StageHandle 是 Begin 返回的工作接口。
+叶子 stage 是一个组件内单一执行流的基本记录单位，由该组件在同一 goroutine 中
+开始并结束。并行执行流分别记录自己的 stage；父 stage 可以通过子 stage 汇总跨组件
+的并行工作，其自身的生命周期由协调组件负责。
 现场执行用 Begin/End，已经拿到真实起止时间的组件用 Record(Stage) 完整补录。
 两条路径产生相同的 Stage，Snapshot.Stages 可以直接 JSON 序列化。
 
@@ -43,6 +46,9 @@ Begin 不需要 context，WithParent 显式指定父阶段，StageHandle.ID 返�
 BeginContext 是可选适配：继承同一 timeline 的 StageRef，保留取消和截止时间，
 返回携带新 StageRef 的 context，不隐式绑定 Timeline。StageFromContext /
 NewStageContext 可以跨进程传递纯数据父引用；没有父引用时挂在操作根下。
+ParentID 是关联线索，记录时不查询或要求父 stage 已存在，子 stage 可以先于父 stage
+上报。已提供的 ParentID 原样保留，读取时按已有数据关联；展示时未能关联的 stage
+可以平铺或归到 root，不丢弃其事实，也不要求 caller 先确认父 stage。
 
 Begin、SetFields、End、Record 只编码并缓存事实，不执行远端 IO。End 第一次决定
 阶段结果，后续调用不修改它。WithStartTime / WithEndTime 接收真实来源时间；未指定
