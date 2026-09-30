@@ -41,8 +41,10 @@ type Timeline interface {
 	Finish(ctx context.Context, operationErr error) (Snapshot, error)
 }
 
-// StageHandle represents running work or a wait. It may end on a different goroutine
-// from the one that began it. A parent may end before its children.
+// StageHandle represents running work or a wait owned by one component.
+// The owning component begins and ends the stage locally; parallel components
+// record separate stages on the same timeline instead of handing off its lifecycle.
+// A parent may end before its children.
 type StageHandle interface {
 	ID() StageID
 	// SetFields merges attributes; the last value for a key wins.
@@ -80,8 +82,10 @@ const (
 	Canceled  Status = "canceled"
 )
 
-// Stage retains the interval and result of a stage. ParentID refers to
-// another stage or Snapshot.RootStageID. FinishedAt is zero while work is running.
+// Stage retains the interval and result of work owned and completed by one
+// component. Parallel components contribute separate stages to the same timeline.
+// ParentID refers to another stage or Snapshot.RootStageID. FinishedAt is zero
+// while work is running.
 type Stage struct {
 	ID         StageID                    `json:"id"`
 	ParentID   StageID                    `json:"parent_id"`
