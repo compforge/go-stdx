@@ -7,6 +7,9 @@ stage，通过共享 Store 汇总。ID 的生成、业务含义和唯一性范�
 sandbox、conversation 等业务概念。New 只构造句柄，不查询远端，不重置已有操作。
 
 Stage 是一段实际工作或等待的纯数据；StageHandle 是 Begin 返回的工作接口。
+叶子 stage 是一个组件内单一执行流的基本记录单位，由该组件在同一 goroutine 中
+开始并结束。并行执行流分别记录自己的 stage；父 stage 可以通过子 stage 汇总跨组件
+的并行工作，其自身的生命周期由协调组件负责。
 现场执行用 Begin/End，已经拿到真实起止时间的组件用 Record(Stage) 完整补录。
 两条路径产生相同的 Stage，Snapshot.Stages 可以直接 JSON 序列化。
 

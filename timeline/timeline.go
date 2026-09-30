@@ -41,10 +41,12 @@ type Timeline interface {
 	Finish(ctx context.Context, operationErr error) (Snapshot, error)
 }
 
-// StageHandle represents running work or a wait owned by one component.
-// The owning component begins and ends the stage locally; parallel components
-// record separate stages on the same timeline instead of handing off its lifecycle.
-// A parent may end before its children.
+// StageHandle represents running work or a wait. A leaf stage is the basic
+// recording unit of one component's execution flow: callers should begin and end
+// it in the same goroutine. Parallel execution flows contribute separate stages.
+// A parent stage may group parallel child stages across components; its own
+// lifecycle remains owned by the coordinating component. A parent may end before
+// its children.
 type StageHandle interface {
 	ID() StageID
 	// SetFields merges attributes; the last value for a key wins.
@@ -82,8 +84,8 @@ const (
 	Canceled  Status = "canceled"
 )
 
-// Stage retains the interval and result of work owned and completed by one
-// component. Parallel components contribute separate stages to the same timeline.
+// Stage retains the interval and result of work or a wait. Leaf stages represent
+// one component's execution flow; parent stages may group parallel child stages.
 // ParentID refers to another stage or Snapshot.RootStageID. FinishedAt is zero
 // while work is running.
 type Stage struct {
