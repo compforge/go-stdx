@@ -10,7 +10,7 @@ import (
 // Implementations apply options synchronously before returning a handle.
 type StageOption func(*Stage) error
 
-// EndOption supplies a source end time or final attributes.
+// EndOption supplies a source end time, final attributes or a code.
 type EndOption func(*Stage) error
 
 func WithStageID(id StageID) StageOption { return func(s *Stage) error { s.ID = id; return nil } }
@@ -27,6 +27,13 @@ func WithEndTime(at time.Time) EndOption {
 func WithFields(fields ...Field) StageOption {
 	return func(s *Stage) error { return setStageFields(s, fields) }
 }
+
+// WithCode records a caller-defined code independently of the stage result.
+// An empty code is omitted from JSON.
+func WithCode(code string) EndOption {
+	return func(s *Stage) error { s.Code = code; return nil }
+}
+
 func WithEndFields(fields ...Field) EndOption {
 	return func(s *Stage) error { return setStageFields(s, fields) }
 }
