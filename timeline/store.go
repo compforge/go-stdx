@@ -31,7 +31,7 @@ type OperationRecord struct {
 	FinishedAt time.Time                  `json:"finished_at,omitempty"`
 	Status     Status                     `json:"status"`
 	Error      string                     `json:"error,omitempty"`
-	Fields     map[string]json.RawMessage `json:"fields,omitempty"`
+	Attributes map[string]json.RawMessage `json:"attributes,omitempty"`
 }
 
 // Document is the durable, current state of one timeline, without read-time
@@ -132,7 +132,7 @@ func MergeDocument(id string, current Document, update Update) (doc Document, ch
 				return Document{}, false, ErrConflict
 			}
 			doc.OperationRecord = *incoming
-			doc.Fields = cloneJSONFields(incoming.Fields)
+			doc.Attributes = cloneJSONAttributes(incoming.Attributes)
 			changed = true
 		}
 	}
@@ -161,10 +161,10 @@ func MergeDocument(id string, current Document, update Update) (doc Document, ch
 			if !old.FinishedAt.IsZero() {
 				return Document{}, false, ErrConflict
 			}
-			incoming.Fields = cloneJSONFields(incoming.Fields)
+			incoming.Attributes = cloneJSONAttributes(incoming.Attributes)
 			doc.Stages[i] = incoming
 		} else {
-			incoming.Fields = cloneJSONFields(incoming.Fields)
+			incoming.Attributes = cloneJSONAttributes(incoming.Attributes)
 			indexes[incoming.ID] = len(doc.Stages)
 			doc.Stages = append(doc.Stages, incoming)
 		}
@@ -190,10 +190,10 @@ func MergeDocument(id string, current Document, update Update) (doc Document, ch
 				return Document{}, false, ErrConflict
 			}
 			revision = old.Revision + 1
-			incoming.Fields = cloneJSONFields(incoming.Fields)
+			incoming.Attributes = cloneJSONAttributes(incoming.Attributes)
 			doc.Stages[i] = StageUpdate{Stage: incoming, Revision: revision}
 		} else {
-			incoming.Fields = cloneJSONFields(incoming.Fields)
+			incoming.Attributes = cloneJSONAttributes(incoming.Attributes)
 			indexes[incoming.ID] = len(doc.Stages)
 			doc.Stages = append(doc.Stages, StageUpdate{Stage: incoming, Revision: revision})
 		}
@@ -222,19 +222,19 @@ func sameJSON(a, b any) bool {
 	return reflect.DeepEqual(decode(a), decode(b))
 }
 func cloneDocument(doc Document) Document {
-	doc.Fields = cloneJSONFields(doc.Fields)
+	doc.Attributes = cloneJSONAttributes(doc.Attributes)
 	doc.Stages = append([]StageUpdate(nil), doc.Stages...)
 	for i := range doc.Stages {
-		doc.Stages[i].Fields = cloneJSONFields(doc.Stages[i].Fields)
+		doc.Stages[i].Attributes = cloneJSONAttributes(doc.Stages[i].Attributes)
 	}
 	return doc
 }
-func cloneJSONFields(fields map[string]json.RawMessage) map[string]json.RawMessage {
-	if fields == nil {
+func cloneJSONAttributes(attributes map[string]json.RawMessage) map[string]json.RawMessage {
+	if attributes == nil {
 		return nil
 	}
-	result := make(map[string]json.RawMessage, len(fields))
-	for key, value := range fields {
+	result := make(map[string]json.RawMessage, len(attributes))
+	for key, value := range attributes {
 		result[key] = append(json.RawMessage(nil), value...)
 	}
 	return result

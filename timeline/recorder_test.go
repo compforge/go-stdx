@@ -99,7 +99,7 @@ func TestConcurrentHandlesAndSnapshots(t *testing.T) {
 			tl := handle(t, "same", store, fmt.Sprint(i))
 			for j := 0; j < 8; j++ {
 				_, stage := timeline.BeginContext(ctx, tl, "parallel")
-				stage.SetFields(timeline.Field{Key: "index", Value: j})
+				stage.SetAttributes(timeline.Attribute{Key: "index", Value: j})
 				if j%2 == 0 {
 					if _, err := tl.Snapshot(ctx); err != nil {
 						failures <- err
@@ -198,7 +198,7 @@ func TestSharedSnapshotOwnershipAndEncodingFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	input := map[string]any{"large": uint64(math.MaxUint64), "name": "before"}
-	_, stage := timeline.BeginContext(ctx, tl, "work", timeline.WithFields(timeline.Field{Key: "input", Value: input}))
+	_, stage := timeline.BeginContext(ctx, tl, "work", timeline.WithAttributes(timeline.Attribute{Key: "input", Value: input}))
 	input["name"] = "after"
 	stage.End(nil)
 	snapshot, err := tl.Snapshot(ctx)
@@ -216,26 +216,26 @@ func TestSharedSnapshotOwnershipAndEncodingFailure(t *testing.T) {
 	if !reflect.DeepEqual(snapshot, restored) {
 		t.Fatal("snapshot JSON did not preserve data")
 	}
-	fields := restored.Stages[0].Fields
+	attributes := restored.Stages[0].Attributes
 	var value struct {
 		Large uint64 `json:"large"`
 		Name  string `json:"name"`
 	}
-	if err := json.Unmarshal(fields["input"], &value); err != nil {
+	if err := json.Unmarshal(attributes["input"], &value); err != nil {
 		t.Fatal(err)
 	}
 	if value.Large != math.MaxUint64 || value.Name != "before" {
 		t.Fatalf("input changed: %+v", value)
 	}
-	snapshot.Stages[0].Fields["input"][0] = '!'
+	snapshot.Stages[0].Attributes["input"][0] = '!'
 	snapshot.Stages[0].Actor.Name = "changed"
 	again, _ := tl.Snapshot(ctx)
-	if again.Stages[0].Fields["input"][0] == '!' || again.Stages[0].Actor.Name == "changed" {
+	if again.Stages[0].Attributes["input"][0] == '!' || again.Stages[0].Actor.Name == "changed" {
 		t.Fatal("snapshot aliases store")
 	}
-	tl.SetFields(timeline.Field{Key: "bad", Value: make(chan int)})
+	tl.SetAttributes(timeline.Attribute{Key: "bad", Value: make(chan int)})
 	bad, err := tl.Finish(ctx, nil)
-	if !errors.Is(err, timeline.ErrInvalidField) || bad.Collection.LocalFlushed || !bad.Collection.StoreRead || bad.Status != timeline.Succeeded {
+	if !errors.Is(err, timeline.ErrInvalidAttribute) || bad.Collection.LocalFlushed || !bad.Collection.StoreRead || bad.Status != timeline.Succeeded {
 		t.Fatalf("collection vs business: %+v %v", bad, err)
 	}
 }

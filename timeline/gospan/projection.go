@@ -83,19 +83,19 @@ func (p *projection) WriteBatch(batch gospan.Batch) error {
 				continue
 			}
 			if marker, ok := attr.Value.Any().(boundary); attr.Key == boundaryKey && ok {
-				if record.Fields == nil && len(marker.data.Fields) > 0 {
-					record.Fields = make(map[string]json.RawMessage)
+				if record.Attributes == nil && len(marker.data.Attributes) > 0 {
+					record.Attributes = make(map[string]json.RawMessage)
 				}
-				for key, value := range marker.data.Fields {
-					record.Fields[key] = value
+				for key, value := range marker.data.Attributes {
+					record.Attributes[key] = value
 				}
 				continue
 			}
-			value := attr.Value.Any().(fieldValue)
-			if record.Fields == nil {
-				record.Fields = make(map[string]json.RawMessage)
+			value := attr.Value.Any().(attributeValue)
+			if record.Attributes == nil {
+				record.Attributes = make(map[string]json.RawMessage)
 			}
-			record.Fields[attr.Key] = value.value
+			record.Attributes[attr.Key] = value.value
 		}
 		if data, ok := p.boundaries[id]; ok {
 			record.ParentID, record.Actor, record.StartedAt = data.ParentID, data.Actor, data.StartedAt
@@ -140,7 +140,7 @@ func (p *projection) snapshot(complete bool) timeline.Snapshot {
 		result.RootStageID, result.Operation = root.ID, root.Name
 		result.StartedAt, result.FinishedAt = root.StartedAt, root.FinishedAt
 		result.Status, result.Error = root.Status, root.Error
-		result.Fields = cloneFields(root.Fields)
+		result.Attributes = cloneAttributes(root.Attributes)
 		if complete && !root.FinishedAt.IsZero() {
 			result.CapturedAt = root.FinishedAt
 		}
@@ -150,7 +150,7 @@ func (p *projection) snapshot(complete bool) timeline.Snapshot {
 			continue
 		}
 		stage := *record
-		stage.Fields = cloneFields(record.Fields)
+		stage.Attributes = cloneAttributes(record.Attributes)
 		result.Stages = append(result.Stages, stage)
 	}
 	slices.SortFunc(result.Stages, func(a, b timeline.Stage) int {
@@ -164,12 +164,12 @@ func (p *projection) snapshot(complete bool) timeline.Snapshot {
 
 // JSON bytes must be copied too: modifying an exported snapshot cannot alter
 // the projection or another snapshot while other goroutines are recording.
-func cloneFields(fields map[string]json.RawMessage) map[string]json.RawMessage {
-	if fields == nil {
+func cloneAttributes(attributes map[string]json.RawMessage) map[string]json.RawMessage {
+	if attributes == nil {
 		return nil
 	}
-	result := make(map[string]json.RawMessage, len(fields))
-	for key, value := range fields {
+	result := make(map[string]json.RawMessage, len(attributes))
+	for key, value := range attributes {
 		result[key] = slices.Clone(value)
 	}
 	return result

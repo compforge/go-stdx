@@ -17,7 +17,7 @@ import (
 
 func completedStage() timeline.Stage {
 	at := time.Date(2026, 9, 28, 1, 0, 0, 0, time.UTC)
-	return timeline.Stage{ID: "external:pull:1", Name: "image_pull", StartedAt: at, FinishedAt: at.Add(3 * time.Second), Status: timeline.Succeeded, Fields: map[string]json.RawMessage{"container": json.RawMessage(`"sandbox"`)}}
+	return timeline.Stage{ID: "external:pull:1", Name: "image_pull", StartedAt: at, FinishedAt: at.Add(3 * time.Second), Status: timeline.Succeeded, Attributes: map[string]json.RawMessage{"container": json.RawMessage(`"sandbox"`)}}
 }
 
 func recordingBackends(t *testing.T, test func(*testing.T, timeline.Timeline)) {
@@ -64,7 +64,7 @@ func TestRecordCompletedDataAndLateReplay(t *testing.T) {
 		if err := tl.Record(input); err != nil {
 			t.Fatal(err)
 		}
-		input.Fields["container"][1] = 'X'
+		input.Attributes["container"][1] = 'X'
 		input.Name = "mutated"
 		if err := tl.Record(original); err != nil {
 			t.Fatal(err)
@@ -77,7 +77,7 @@ func TestRecordCompletedDataAndLateReplay(t *testing.T) {
 			t.Fatalf("late record changed operation: %+v", got)
 		}
 		stage := got.Stages[0]
-		if stage.Name != original.Name || string(stage.Fields["container"]) != `"sandbox"` || stage.Duration(got.CapturedAt) != 3*time.Second || stage.ParentID != got.RootStageID || stage.Actor != (timeline.Actor{}) {
+		if stage.Name != original.Name || string(stage.Attributes["container"]) != `"sandbox"` || stage.Duration(got.CapturedAt) != 3*time.Second || stage.ParentID != got.RootStageID || stage.Actor != (timeline.Actor{}) {
 			t.Fatalf("bad imported stage: %+v", stage)
 		}
 		raw, err := json.Marshal(got)
@@ -94,9 +94,9 @@ func TestRecordCompletedDataAndLateReplay(t *testing.T) {
 		if len(restored.Stages) != len(got.Stages) || restored.Stages[0].Duration(restored.CapturedAt) != 3*time.Second {
 			t.Fatal("JSON round trip lost interval")
 		}
-		got.Stages[0].Fields["container"][1] = 'Y'
+		got.Stages[0].Attributes["container"][1] = 'Y'
 		again, err := tl.Snapshot(ctx)
-		if err != nil || string(again.Stages[0].Fields["container"]) != `"sandbox"` {
+		if err != nil || string(again.Stages[0].Attributes["container"]) != `"sandbox"` {
 			t.Fatal("snapshot aliases retained data", err)
 		}
 	})
@@ -122,8 +122,8 @@ func TestRecordRejectsIncompleteOrInvalidData(t *testing.T) {
 			}
 		}
 		data := completedStage()
-		data.Fields["broken"] = json.RawMessage(`{`)
-		if err := tl.Record(data); !errors.Is(err, timeline.ErrInvalidField) {
+		data.Attributes["broken"] = json.RawMessage(`{`)
+		if err := tl.Record(data); !errors.Is(err, timeline.ErrInvalidAttribute) {
 			t.Fatal(err)
 		}
 		got, err := tl.Snapshot(context.Background())
@@ -164,16 +164,16 @@ func TestExplicitTimesAndParentWithoutContext(t *testing.T) {
 		data := completedStage()
 		parent := tl.Begin("parent")
 		actor := timeline.Actor{Name: "kubelet"}
-		child := tl.Begin("schedule_pod", timeline.WithStageID("pod:schedule"), timeline.WithParent(parent.ID()), timeline.WithStartTime(data.StartedAt), timeline.WithStageActor(actor), timeline.WithFields(timeline.Field{Key: "reason", Value: "pending"}))
-		child.SetFields(timeline.Field{Key: "reason", Value: "scheduled"})
-		child.End(nil, timeline.WithEndTime(data.FinishedAt), timeline.WithEndFields(timeline.Field{Key: "node", Value: "node-a"}))
+		child := tl.Begin("schedule_pod", timeline.WithStageID("pod:schedule"), timeline.WithParent(parent.ID()), timeline.WithStartTime(data.StartedAt), timeline.WithStageActor(actor), timeline.WithAttributes(timeline.Attribute{Key: "reason", Value: "pending"}))
+		child.SetAttributes(timeline.Attribute{Key: "reason", Value: "scheduled"})
+		child.End(nil, timeline.WithEndTime(data.FinishedAt), timeline.WithEndAttributes(timeline.Attribute{Key: "node", Value: "node-a"}))
 		parent.End(nil)
 		got, err := tl.Snapshot(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
 		c := got.Stages[0]
-		if c.ID != child.ID() || c.ParentID != parent.ID() || c.Actor != actor || !c.StartedAt.Equal(data.StartedAt) || !c.FinishedAt.Equal(data.FinishedAt) || string(c.Fields["reason"]) != `"scheduled"` || string(c.Fields["node"]) != `"node-a"` {
+		if c.ID != child.ID() || c.ParentID != parent.ID() || c.Actor != actor || !c.StartedAt.Equal(data.StartedAt) || !c.FinishedAt.Equal(data.FinishedAt) || string(c.Attributes["reason"]) != `"scheduled"` || string(c.Attributes["node"]) != `"node-a"` {
 			t.Fatalf("lost source facts: %+v", c)
 		}
 	})

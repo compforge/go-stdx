@@ -10,17 +10,18 @@ import (
 // stages retain full Actor values so independent writers never merge local refs.
 // Keep the wire stage explicit: embedding Stage here would also emit its actor.
 type stageJSON struct {
-	ID         StageID                    `json:"id"`
-	ParentID   StageID                    `json:"parent_id"`
-	ActorRef   uint64                     `json:"actor_ref,omitempty"`
-	Elapsed    time.Duration              `json:"elapsed_ns,omitempty"`
-	Name       string                     `json:"name"`
-	StartedAt  time.Time                  `json:"started_at"`
-	FinishedAt time.Time                  `json:"finished_at,omitempty"`
-	Status     Status                     `json:"status"`
-	Error      string                     `json:"error,omitempty"`
-	Code       string                     `json:"code,omitempty"`
-	Fields     map[string]json.RawMessage `json:"fields,omitempty"`
+	LegacyAttributes map[string]json.RawMessage `json:"fields,omitempty"`
+	ID               StageID                    `json:"id"`
+	ParentID         StageID                    `json:"parent_id"`
+	ActorRef         uint64                     `json:"actor_ref,omitempty"`
+	Elapsed          time.Duration              `json:"elapsed_ns,omitempty"`
+	Name             string                     `json:"name"`
+	StartedAt        time.Time                  `json:"started_at"`
+	FinishedAt       time.Time                  `json:"finished_at,omitempty"`
+	Status           Status                     `json:"status"`
+	Error            string                     `json:"error,omitempty"`
+	Code             string                     `json:"code,omitempty"`
+	Attributes       map[string]json.RawMessage `json:"attributes,omitempty"`
 }
 
 type stageUpdateJSON struct {
@@ -32,6 +33,7 @@ type stageUpdateJSON struct {
 // replace the embedded full stages while retaining all document metadata.
 type documentData Document
 type documentJSON struct {
+	LegacyAttributes map[string]json.RawMessage `json:"fields,omitempty"`
 	documentData
 	Actors []Actor           `json:"actors,omitempty"`
 	Stages []stageUpdateJSON `json:"stages,omitempty"`
@@ -39,6 +41,7 @@ type documentJSON struct {
 
 type snapshotData Snapshot
 type snapshotJSON struct {
+	LegacyAttributes map[string]json.RawMessage `json:"fields,omitempty"`
 	snapshotData
 	Actors []Actor     `json:"actors,omitempty"`
 	Stages []stageJSON `json:"stages,omitempty"`
@@ -65,11 +68,14 @@ func (t *actorTable) encode(stage Stage) stageJSON {
 	return stageJSON{
 		ID: stage.ID, ParentID: stage.ParentID, ActorRef: ref,
 		Elapsed: stage.Elapsed, Name: stage.Name, StartedAt: stage.StartedAt,
-		FinishedAt: stage.FinishedAt, Status: stage.Status, Error: stage.Error, Code: stage.Code, Fields: stage.Fields,
+		FinishedAt: stage.FinishedAt, Status: stage.Status, Error: stage.Error, Code: stage.Code, Attributes: stage.Attributes,
 	}
 }
 
 func (s stageJSON) decode(actors []Actor) (Stage, error) {
+	if s.Attributes == nil {
+		s.Attributes = s.LegacyAttributes
+	}
 	var actor Actor
 	if s.ActorRef != 0 {
 		if s.ActorRef > uint64(len(actors)) || actors[s.ActorRef-1] == (Actor{}) {
@@ -80,7 +86,7 @@ func (s stageJSON) decode(actors []Actor) (Stage, error) {
 	return Stage{
 		ID: s.ID, ParentID: s.ParentID, Actor: actor,
 		Elapsed: s.Elapsed, Name: s.Name, StartedAt: s.StartedAt,
-		FinishedAt: s.FinishedAt, Status: s.Status, Error: s.Error, Code: s.Code, Fields: s.Fields,
+		FinishedAt: s.FinishedAt, Status: s.Status, Error: s.Error, Code: s.Code, Attributes: s.Attributes,
 	}, nil
 }
 
@@ -107,6 +113,9 @@ func (d *Document) UnmarshalJSON(raw []byte) error {
 		return err
 	}
 	next := Document(wire.documentData)
+	if next.Attributes == nil {
+		next.Attributes = wire.LegacyAttributes
+	}
 	if wire.Stages != nil {
 		next.Stages = make([]StageUpdate, len(wire.Stages))
 		for i, stage := range wire.Stages {
@@ -144,6 +153,9 @@ func (s *Snapshot) UnmarshalJSON(raw []byte) error {
 		return err
 	}
 	next := Snapshot(wire.snapshotData)
+	if next.Attributes == nil {
+		next.Attributes = wire.LegacyAttributes
+	}
 	if wire.Stages != nil {
 		next.Stages = make([]Stage, len(wire.Stages))
 		for i, stage := range wire.Stages {

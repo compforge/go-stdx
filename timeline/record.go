@@ -14,7 +14,7 @@ func (t *Recorder) Record(stage Stage) error {
 	if stage.ParentID == "" {
 		stage.ParentID = rootID(t.id)
 	}
-	stage.Fields = cloneJSONFields(stage.Fields)
+	stage.Attributes = cloneJSONAttributes(stage.Attributes)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	// A completed import has one immutable state, independent of process-local
@@ -32,9 +32,9 @@ func validateCompleted(id string, stage Stage) error {
 	default:
 		return ErrInvalidStage
 	}
-	for key, value := range stage.Fields {
+	for key, value := range stage.Attributes {
 		if !json.Valid(value) {
-			return fmt.Errorf("%w: %s", ErrInvalidField, key)
+			return fmt.Errorf("%w: %s", ErrInvalidAttribute, key)
 		}
 	}
 	return nil

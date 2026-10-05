@@ -42,7 +42,7 @@ func TestCollectionDeadlineAndFinishRetry(t *testing.T) {
 		_ = tracer.Close(context.Background())
 	}()
 	rootCtx, root := tracer.Start(context.Background(), "delayed")
-	registry := timeline.NewRegistry(func(context.Context, string, string, ...timeline.Field) (timeline.Timeline, error) {
+	registry := timeline.NewRegistry(func(context.Context, string, string, ...timeline.Attribute) (timeline.Timeline, error) {
 		imports, _ := timeline.New(t.Name())
 		return &recorder{tracer: tracer, root: root, rootCtx: rootCtx, sink: sink, imports: imports, stages: make(map[timeline.StageID]*stage)}, nil
 	})
@@ -85,22 +85,22 @@ func TestCollectionDeadlineAndFinishRetry(t *testing.T) {
 	}
 }
 
-func TestCheckpointAttributeDoesNotCollideWithUserFields(t *testing.T) {
+func TestCheckpointAttributeDoesNotCollideWithUserAttributes(t *testing.T) {
 	ctx := context.Background()
-	tl, err := New(ctx, t.Name(), "fields", timeline.Field{Key: checkpointKey, Value: uint64(999)})
+	tl, err := New(ctx, t.Name(), "attributes", timeline.Attribute{Key: checkpointKey, Value: uint64(999)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, stage := timeline.BeginContext(ctx, tl, "work", timeline.WithFields(timeline.Field{Key: checkpointKey, Value: "user value"}))
+	_, stage := timeline.BeginContext(ctx, tl, "work", timeline.WithAttributes(timeline.Attribute{Key: checkpointKey, Value: "user value"}))
 	stage.End(nil)
 	for range 3 {
-		if s, err := tl.Snapshot(context.Background()); err != nil || len(s.Fields) != 1 || string(s.Fields[checkpointKey]) != "999" {
-			t.Fatalf("checkpoint leaked into user fields: %+v err=%v", s, err)
+		if s, err := tl.Snapshot(context.Background()); err != nil || len(s.Attributes) != 1 || string(s.Attributes[checkpointKey]) != "999" {
+			t.Fatalf("checkpoint leaked into user attributes: %+v err=%v", s, err)
 		}
 	}
 	s, err := tl.Finish(context.Background(), nil)
-	if err != nil || string(s.Stages[0].Fields[checkpointKey]) != `"user value"` {
-		t.Fatalf("user field was consumed as a checkpoint: %+v err=%v", s, err)
+	if err != nil || string(s.Stages[0].Attributes[checkpointKey]) != `"user value"` {
+		t.Fatalf("user attribute was consumed as a checkpoint: %+v err=%v", s, err)
 	}
 }
 
@@ -128,14 +128,14 @@ func TestConstructorIsolatesForeignGospanContext(t *testing.T) {
 	}
 }
 
-func TestProjectionCopiesBatchFields(t *testing.T) {
+func TestProjectionCopiesBatchAttributes(t *testing.T) {
 	p := newProjection(t.Name())
-	attrs := []slog.Attr{slog.Any("key", fieldValue{value: json.RawMessage(`"before"`)})}
+	attrs := []slog.Attr{slog.Any("key", attributeValue{value: json.RawMessage(`"before"`)})}
 	if err := p.WriteBatch(gospan.Batch{Events: []gospan.Event{{Kind: gospan.EventStart, SpanID: 1, Name: "root", StartNS: time.Now().UnixNano(), Attrs: attrs}}}); err != nil {
 		t.Fatal(err)
 	}
-	attrs[0] = slog.Any("key", fieldValue{value: json.RawMessage(`"reused buffer"`)})
-	if got := p.snapshot(true).Fields["key"]; string(got) != `"before"` {
+	attrs[0] = slog.Any("key", attributeValue{value: json.RawMessage(`"reused buffer"`)})
+	if got := p.snapshot(true).Attributes["key"]; string(got) != `"before"` {
 		t.Fatalf("retained gospan batch memory: %v", got)
 	}
 }

@@ -42,11 +42,11 @@ func TestRootRevisionsAndDocumentRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	store := timeline.NewMemoryStore()
 	owner := handle(t, "id", store, "api")
-	if err := owner.Start(ctx, "start", timeline.Field{Key: "phase", Value: "queued"}); err != nil {
+	if err := owner.Start(ctx, "start", timeline.Attribute{Key: "phase", Value: "queued"}); err != nil {
 		t.Fatal(err)
 	}
 	first, _ := store.Read(ctx, "id")
-	owner.SetFields(timeline.Field{Key: "phase", Value: "running"})
+	owner.SetAttributes(timeline.Attribute{Key: "phase", Value: "running"})
 	if _, err := owner.Finish(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestRootRevisionsAndDocumentRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	last, _ := store.Read(ctx, "id")
-	if last.Status != timeline.Succeeded || string(last.Fields["phase"]) != `"running"` {
+	if last.Status != timeline.Succeeded || string(last.Attributes["phase"]) != `"running"` {
 		t.Fatalf("stale root: %+v", last)
 	}
 	raw, err := json.Marshal(last)

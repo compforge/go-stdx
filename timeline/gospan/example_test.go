@@ -12,7 +12,7 @@ import (
 func ExampleNew() {
 	ctx := context.Background()
 	tl, err := gospantimeline.New(ctx, "start-42", "sandbox.start",
-		timeline.Field{Key: "sandbox_id", Value: "sandbox-1"})
+		timeline.Attribute{Key: "sandbox_id", Value: "sandbox-1"})
 	if err != nil {
 		panic(err)
 	}

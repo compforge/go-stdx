@@ -26,9 +26,9 @@ func finishTimeline(t *testing.T, tl timeline.Timeline) timeline.Snapshot {
 
 func TestRegistryConcurrentCreateAndParallelRecording(t *testing.T) {
 	var creates atomic.Int32
-	r := timeline.NewRegistry(func(ctx context.Context, id, operation string, fields ...timeline.Field) (timeline.Timeline, error) {
+	r := timeline.NewRegistry(func(ctx context.Context, id, operation string, attributes ...timeline.Attribute) (timeline.Timeline, error) {
 		creates.Add(1)
-		return gospantimeline.New(ctx, id, operation, fields...)
+		return gospantimeline.New(ctx, id, operation, attributes...)
 	})
 	const count = 32
 	winners := make(chan timeline.Timeline, count)
@@ -106,13 +106,13 @@ func TestRegistryInitializationDoesNotBlockOtherIDs(t *testing.T) {
 	unblock := func() { once.Do(func() { close(release) }) }
 	t.Cleanup(unblock)
 	failed := errors.New("backend unavailable")
-	r := timeline.NewRegistry(func(ctx context.Context, id, operation string, fields ...timeline.Field) (timeline.Timeline, error) {
+	r := timeline.NewRegistry(func(ctx context.Context, id, operation string, attributes ...timeline.Attribute) (timeline.Timeline, error) {
 		if id == "slow" {
 			close(entered)
 			<-release
 			return nil, failed
 		}
-		return gospantimeline.New(ctx, id, operation, fields...)
+		return gospantimeline.New(ctx, id, operation, attributes...)
 	})
 	first := make(chan error, 1)
 	go func() { _, err := r.Create(context.Background(), "slow", "work"); first <- err }()
@@ -153,12 +153,12 @@ func TestRegistryInitializationDoesNotBlockOtherIDs(t *testing.T) {
 func TestRegistryFailedCreateCanRetry(t *testing.T) {
 	var calls int
 	failed := errors.New("backend unavailable")
-	r := timeline.NewRegistry(func(ctx context.Context, id, operation string, fields ...timeline.Field) (timeline.Timeline, error) {
+	r := timeline.NewRegistry(func(ctx context.Context, id, operation string, attributes ...timeline.Attribute) (timeline.Timeline, error) {
 		calls++
 		if calls == 1 {
 			return nil, failed
 		}
-		return gospantimeline.New(ctx, id, operation, fields...)
+		return gospantimeline.New(ctx, id, operation, attributes...)
 	})
 	if _, err := r.Create(context.Background(), "retry", "work"); !errors.Is(err, failed) {
 		t.Fatalf("first error: %v", err)

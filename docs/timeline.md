@@ -16,7 +16,7 @@ Stage 是一段实际工作或等待的纯数据；StageHandle 是 Begin 返回�
 Code 是可选的 caller 约定字段，其含义独立于 Status 和 Error。现场记录使用
 `stage.End(err, timeline.WithCode("ResourceQuotaExceeded"))`，成功结果也可使用
 `stage.End(nil, timeline.WithCode("Cached"))`；补录时直接设置 Stage.Code。
-SDK 原样保存 code，不解释其含义，也不据此决定阶段或操作的成功失败；补充详情仍放 Fields。
+SDK 原样保存 code，不解释其含义，也不据此决定阶段或操作的成功失败；补充详情仍放 Attributes。
 未提供时 JSON 省略 code，旧数据读取为空字符串。
 
 Begin 默认生成独立 UUID，也可用 WithStageID 指定稳定身份。业务重试产生新阶段；
@@ -28,8 +28,11 @@ Pod name，或只填 worker name。它不代表发起请求的用户。WithActor
 该句柄创建的阶段自动携带它；空 Actor 不出现在 JSON 中。
 
 Snapshot、Stage、StageRef 都是纯数据，支持标准 JSON 序列化。业务代码可以直接
-持久化或返回 Snapshot，不必再定义一套 DTO。属性在记录调用返回前完成 JSON 编码，
-使用 map[string]json.RawMessage 保存，FieldValue[T] 解码时不会先经过 float64。
+持久化或返回 Snapshot，不必再定义一套 DTO。Attribute 表示操作或阶段的附加键值属性；
+Attributes 在 JSON 中使用 `attributes`，空集合省略。读取持久化 Document、Snapshot 及
+阶段时也接受 `fields`；同时存在时优先使用非 null 的 `attributes`。通过 WithAttributes、SetAttributes 和
+WithEndAttributes 记录，重复 key 以后写为准。属性在记录调用返回前完成 JSON 编码，
+使用 map[string]json.RawMessage 保存，AttributeValue[T] 解码时不会先经过 float64。
 
 普通业务响应可调用 `Snapshot.Summary()`，将操作结果、总耗时、各阶段状态与耗时以及
 采集结果转换为可读字符串，供上游直接展示。完整快照保留用于持久化和诊断查询；摘要
@@ -50,7 +53,7 @@ ParentID 是关联线索，记录时不查询或要求父 stage 已存在，子 
 上报。已提供的 ParentID 原样保留，读取时按已有数据关联；展示时未能关联的 stage
 可以平铺或归到 root，不丢弃其事实，也不要求 caller 先确认父 stage。
 
-Begin、SetFields、End、Record 只编码并缓存事实，不执行远端 IO。End 第一次决定
+Begin、SetAttributes、End、Record 只编码并缓存事实，不执行远端 IO。End 第一次决定
 阶段结果，后续调用不修改它。WithStartTime / WithEndTime 接收真实来源时间；未指定
 时用本机时钟，普通现场计时额外保留单调时钟测得的耗时。显式时间保留原样，不强行
 裁剪到父阶段或根操作的区间内。
@@ -66,7 +69,7 @@ Begin 后 Flush，不能只在 End 后上报。
 
 协调方在业务结束时调用 Finish，它记录终态并读取当前快照。业务结束不会封锁后续
 阶段记录，延迟上报可以继续汇入 Snapshot。根状态由调用 Start 的句柄写入，使用递增修订号；开始边界和已接受的终态不能
-被覆盖，冲突写入返回 ErrConflict。只有阶段的组件不调用 Start、SetFields 或 Finish。
+被覆盖，冲突写入返回 ErrConflict。只有阶段的组件不调用 Start、SetAttributes 或 Finish。
 业务协调方及其接管规则由 caller 确定，timeline 不承担调度、租约或任务恢复。
 
 请求超时不等于业务结束。调用方可以 Snapshot 查看进度，后台实际完成方仍负责

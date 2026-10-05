@@ -6,7 +6,7 @@ import (
 )
 
 // Summary returns a human-readable plain-text view of the operation and its
-// stages in snapshot order. It omits IDs, actors and arbitrary fields. It is a
+// stages in snapshot order. It omits IDs, actors and arbitrary attributes. It is a
 // display format, not a round-trip serialization or a machine-readable contract.
 // Durations use the snapshot capture time, so repeated calls are deterministic.
 // Operation status and collection outcomes remain independent of stage results.

@@ -55,7 +55,7 @@ func TestIndependentProcessesContributeStages(t *testing.T) {
 			t.Fatal(err)
 		}
 		ctx := timeline.NewStageContext(context.Background(), ref)
-		_, stage := timeline.BeginContext(ctx, tl, "ensure_runtime", timeline.WithFields(timeline.Field{Key: "worker", Value: id}))
+		_, stage := timeline.BeginContext(ctx, tl, "ensure_runtime", timeline.WithAttributes(timeline.Attribute{Key: "worker", Value: id}))
 		// Persist a running boundary as a live observer would see it.
 		if err := tl.Flush(ctx); err != nil {
 			t.Fatal(err)
@@ -167,13 +167,13 @@ func TestSQLIdempotencyConflictAndIsolation(t *testing.T) {
 	schema(t, db)
 	store := sqlstore.New(db)
 	operation := timeline.OperationRecord{Revision: 1, Operation: "start", StartedAt: time.Now().UTC(), Status: timeline.Running,
-		Fields: map[string]json.RawMessage{"data": json.RawMessage(`{"z":18446744073709551615,"a":1}`)}}
+		Attributes: map[string]json.RawMessage{"data": json.RawMessage(`{"z":18446744073709551615,"a":1}`)}}
 	update := timeline.Update{Operation: &operation}
 	if err := store.Merge(ctx, "a", update); err != nil {
 		t.Fatal(err)
 	}
 	// Emulate normalization by a native JSON column while preserving large numbers.
-	operation.Fields["data"] = json.RawMessage(`{ "a": 1, "z": 18446744073709551615 }`)
+	operation.Attributes["data"] = json.RawMessage(`{ "a": 1, "z": 18446744073709551615 }`)
 	if err := store.Merge(ctx, "a", update); err != nil {
 		t.Fatal(err)
 	}

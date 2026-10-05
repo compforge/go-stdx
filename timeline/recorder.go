@@ -23,16 +23,16 @@ func WithActor(actor Actor) Option { return func(t *Recorder) { t.actor = actor 
 // bounded IO using their supplied context. Flush at business handoff boundaries
 // and before discarding a handle; unflushed records are lost on process exit.
 type Recorder struct {
-	id        string
-	store     Store
-	actor     Actor
-	mu        sync.Mutex
-	flushGate chan struct{}
-	pending   []Update
-	operation OperationRecord
-	fieldErr  error
-	started   bool
-	finished  bool
+	id           string
+	store        Store
+	actor        Actor
+	mu           sync.Mutex
+	flushGate    chan struct{}
+	pending      []Update
+	operation    OperationRecord
+	attributeErr error
+	started      bool
+	finished     bool
 }
 
 // New constructs a handle without starting/restarting an operation or looking
@@ -57,14 +57,14 @@ func (t *Recorder) ID() string { return t.id }
 // Start records the operation boundary and flushes it. Calling Start on another
 // handle never resets the document: a different start boundary conflicts. Retry a
 // failed flush with Flush; do not invent a second business start timestamp.
-func (t *Recorder) Start(ctx context.Context, operation string, fields ...Field) error {
+func (t *Recorder) Start(ctx context.Context, operation string, attributes ...Attribute) error {
 	t.mu.Lock()
 	if t.started || t.finished {
 		t.mu.Unlock()
 		return ErrAlreadyStarted
 	}
 	t.started = true
-	t.operation = OperationRecord{Revision: 1, StartedAt: time.Now().UTC(), Operation: operation, Status: Running, Fields: t.encode(fields)}
+	t.operation = OperationRecord{Revision: 1, StartedAt: time.Now().UTC(), Operation: operation, Status: Running, Attributes: t.encode(attributes)}
 	t.enqueueOperation()
 	t.mu.Unlock()
 	return t.Flush(ctx)
@@ -99,15 +99,15 @@ func (t *Recorder) Begin(name string, opts ...StageOption) StageHandle {
 		StartedAt: now.UTC(), Status: Running, Actor: t.actor}
 	for _, opt := range opts {
 		if err := opt(&data); err != nil {
-			t.fieldErr = errors.Join(t.fieldErr, err)
+			t.attributeErr = errors.Join(t.attributeErr, err)
 			return noopStage{}
 		}
 	}
 	if data.ID == "" || data.ID == data.ParentID || data.ID == rootID(t.id) || data.StartedAt.IsZero() {
-		t.fieldErr = errors.Join(t.fieldErr, ErrInvalidStage)
+		t.attributeErr = errors.Join(t.attributeErr, ErrInvalidStage)
 		return noopStage{}
 	}
-	data.Fields = cloneJSONFields(data.Fields)
+	data.Attributes = cloneJSONAttributes(data.Attributes)
 	s := &recordedStage{owner: t, started: now, record: StageUpdate{Stage: data}}
 	if !data.StartedAt.Equal(now) {
 		s.started = time.Time{}
@@ -116,17 +116,17 @@ func (t *Recorder) Begin(name string, opts ...StageOption) StageHandle {
 	return s
 }
 
-func (t *Recorder) SetFields(fields ...Field) {
+func (t *Recorder) SetAttributes(attributes ...Attribute) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if !t.started {
-		t.fieldErr = errors.Join(t.fieldErr, ErrNotStarted)
+		t.attributeErr = errors.Join(t.attributeErr, ErrNotStarted)
 		return
 	}
 	if t.finished {
 		return
 	}
-	t.operation.Fields = mergeFields(t.operation.Fields, t.encode(fields))
+	t.operation.Attributes = mergeAttributes(t.operation.Attributes, t.encode(attributes))
 	t.operation.Revision++
 	t.enqueueOperation()
 }
@@ -143,17 +143,17 @@ func (s *recordedStage) ID() StageID { return s.record.ID }
 func (s *recordedStage) enqueue() {
 	s.record.Revision++
 	record := s.record
-	record.Fields = cloneJSONFields(record.Fields)
+	record.Attributes = cloneJSONAttributes(record.Attributes)
 	s.owner.pending = append(s.owner.pending, Update{Stages: []StageUpdate{record}})
 }
 
-func (s *recordedStage) SetFields(fields ...Field) {
+func (s *recordedStage) SetAttributes(attributes ...Attribute) {
 	s.owner.mu.Lock()
 	defer s.owner.mu.Unlock()
 	if s.ended {
 		return
 	}
-	s.record.Fields = mergeFields(s.record.Fields, s.owner.encode(fields))
+	s.record.Attributes = mergeAttributes(s.record.Attributes, s.owner.encode(attributes))
 	s.enqueue()
 }
 
@@ -168,11 +168,11 @@ func (s *recordedStage) End(err error, opts ...EndOption) {
 	s.record.FinishedAt = now.UTC()
 	for _, opt := range opts {
 		if optionErr := opt(&s.record.Stage); optionErr != nil {
-			s.owner.fieldErr = errors.Join(s.owner.fieldErr, optionErr)
+			s.owner.attributeErr = errors.Join(s.owner.attributeErr, optionErr)
 		}
 	}
 	if s.record.FinishedAt.IsZero() || s.record.FinishedAt.Before(s.record.StartedAt) {
-		s.owner.fieldErr = errors.Join(s.owner.fieldErr, ErrInvalidStage)
+		s.owner.attributeErr = errors.Join(s.owner.attributeErr, ErrInvalidStage)
 		return
 	}
 	if !s.started.IsZero() && s.record.FinishedAt.Equal(now) {
@@ -192,25 +192,25 @@ func result(err error) (Status, string) {
 	return Failed, err.Error()
 }
 
-func (t *Recorder) encode(fields []Field) map[string]json.RawMessage {
-	if len(fields) == 0 {
+func (t *Recorder) encode(attributes []Attribute) map[string]json.RawMessage {
+	if len(attributes) == 0 {
 		return nil
 	}
-	values := make(map[string]json.RawMessage, len(fields))
-	for _, field := range fields {
-		value, err := json.Marshal(field.Value)
+	values := make(map[string]json.RawMessage, len(attributes))
+	for _, attribute := range attributes {
+		value, err := json.Marshal(attribute.Value)
 		if err != nil {
-			if t.fieldErr == nil {
-				t.fieldErr = fmt.Errorf("%w: %s: %v", ErrInvalidField, field.Key, err)
+			if t.attributeErr == nil {
+				t.attributeErr = fmt.Errorf("%w: %s: %v", ErrInvalidAttribute, attribute.Key, err)
 			}
 			continue
 		}
-		values[field.Key] = value
+		values[attribute.Key] = value
 	}
 	return values
 }
 
-func mergeFields(dst, src map[string]json.RawMessage) map[string]json.RawMessage {
+func mergeAttributes(dst, src map[string]json.RawMessage) map[string]json.RawMessage {
 	if len(dst) == 0 && len(src) == 0 {
 		return nil
 	}
@@ -238,10 +238,10 @@ func (t *Recorder) Flush(ctx context.Context) error {
 	}
 	t.mu.Lock()
 	updates := append([]Update(nil), t.pending...)
-	fieldErr := t.fieldErr
+	attributeErr := t.attributeErr
 	t.mu.Unlock()
 	if len(updates) == 0 {
-		return fieldErr
+		return attributeErr
 	}
 	// Coalesce intermediate states before IO; only latest revisions are durable.
 	update := Update{}
@@ -253,7 +253,7 @@ func (t *Recorder) Flush(ctx context.Context) error {
 		}
 		for _, stage := range pending.Stages {
 			if old, ok := stages[stage.ID]; ok && old.Revision == stage.Revision && !sameJSON(old, stage) {
-				return errors.Join(ErrConflict, fieldErr)
+				return errors.Join(ErrConflict, attributeErr)
 			}
 			stages[stage.ID] = stage
 		}
@@ -262,12 +262,12 @@ func (t *Recorder) Flush(ctx context.Context) error {
 		update.Stages = append(update.Stages, stage)
 	}
 	if err := t.store.Merge(ctx, t.id, update); err != nil {
-		return errors.Join(err, fieldErr)
+		return errors.Join(err, attributeErr)
 	}
 	t.mu.Lock()
 	t.pending = append([]Update(nil), t.pending[len(updates):]...)
 	t.mu.Unlock()
-	return fieldErr
+	return attributeErr
 }
 
 func (t *Recorder) Snapshot(ctx context.Context) (Snapshot, error) {
@@ -304,7 +304,7 @@ func (t *Recorder) Finish(ctx context.Context, operationErr error) (Snapshot, er
 
 func (t *Recorder) enqueueOperation() {
 	operation := t.operation
-	operation.Fields = cloneJSONFields(operation.Fields)
+	operation.Attributes = cloneJSONAttributes(operation.Attributes)
 	t.pending = append(t.pending, Update{Operation: &operation})
 }
 

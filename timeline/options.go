@@ -28,8 +28,8 @@ func WithStageActor(actor Actor) StageOption {
 func WithEndTime(at time.Time) EndOption {
 	return func(s *Stage) error { s.FinishedAt = at; return nil }
 }
-func WithFields(fields ...Field) StageOption {
-	return func(s *Stage) error { return setStageFields(s, fields) }
+func WithAttributes(attributes ...Attribute) StageOption {
+	return func(s *Stage) error { return setStageAttributes(s, attributes) }
 }
 
 // WithCode records a caller-defined code independently of the stage result.
@@ -38,20 +38,20 @@ func WithCode(code string) EndOption {
 	return func(s *Stage) error { s.Code = code; return nil }
 }
 
-func WithEndFields(fields ...Field) EndOption {
-	return func(s *Stage) error { return setStageFields(s, fields) }
+func WithEndAttributes(attributes ...Attribute) EndOption {
+	return func(s *Stage) error { return setStageAttributes(s, attributes) }
 }
 
-func setStageFields(s *Stage, fields []Field) error {
-	for _, field := range fields {
-		raw, err := json.Marshal(field.Value)
+func setStageAttributes(s *Stage, attributes []Attribute) error {
+	for _, attribute := range attributes {
+		raw, err := json.Marshal(attribute.Value)
 		if err != nil {
-			return fmt.Errorf("%w: %s: %v", ErrInvalidField, field.Key, err)
+			return fmt.Errorf("%w: %s: %v", ErrInvalidAttribute, attribute.Key, err)
 		}
-		if s.Fields == nil {
-			s.Fields = make(map[string]json.RawMessage)
+		if s.Attributes == nil {
+			s.Attributes = make(map[string]json.RawMessage)
 		}
-		s.Fields[field.Key] = raw
+		s.Attributes[attribute.Key] = raw
 	}
 	return nil
 }
