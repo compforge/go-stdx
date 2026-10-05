@@ -14,7 +14,7 @@ func TestSummaryPreservesOperationAndCollectionFacts(t *testing.T) {
 		ID: "private-operation-id", Operation: "sandbox_start", Status: timeline.Succeeded,
 		StartedAt: at, FinishedAt: at.Add(2 * time.Second), CapturedAt: at.Add(3 * time.Second),
 		Collection: timeline.Collection{LocalFlushed: true},
-		Fields:     map[string]json.RawMessage{"internal": json.RawMessage(`"hidden"`)},
+		Attributes: map[string]json.RawMessage{"internal": json.RawMessage(`"hidden"`)},
 		Stages: []timeline.Stage{
 			{ID: "private-stage-id", Name: "attempt", Status: timeline.Failed, Error: "try again",
 				StartedAt: at, FinishedAt: at.Add(time.Second), Elapsed: 500 * time.Millisecond},

@@ -33,33 +33,33 @@ func TestSnapshotQueriesPreserveParallelFacts(t *testing.T) {
 	}
 }
 
-func TestFieldValueLastValueAndType(t *testing.T) {
-	fields := map[string]json.RawMessage{"key": json.RawMessage(`42`)}
-	if v, ok := timeline.FieldValue[int](fields, "key"); !ok || v != 42 {
+func TestAttributeValueLastValueAndType(t *testing.T) {
+	attributes := map[string]json.RawMessage{"key": json.RawMessage(`42`)}
+	if v, ok := timeline.AttributeValue[int](attributes, "key"); !ok || v != 42 {
 		t.Fatalf("value=%v ok=%v", v, ok)
 	}
-	if _, ok := timeline.FieldValue[string](fields, "key"); ok {
+	if _, ok := timeline.AttributeValue[string](attributes, "key"); ok {
 		t.Fatal("must not fall back to an older value with a matching type")
 	}
-	if _, ok := timeline.FieldValue[int](fields, "missing"); ok {
-		t.Fatal("missing field is present")
+	if _, ok := timeline.AttributeValue[int](attributes, "missing"); ok {
+		t.Fatal("missing attribute is present")
 	}
 }
 
-func TestFinalFieldsAndResultAreAtomic(t *testing.T) {
+func TestFinalAttributesAndResultAreAtomic(t *testing.T) {
 	ctx := context.Background()
 	tl, err := gospantimeline.New(ctx, t.Name(), "operation")
 	if err != nil {
 		t.Fatal(err)
 	}
-	tl.SetFields(timeline.Field{Key: "runtime", Value: "pod"})
+	tl.SetAttributes(timeline.Attribute{Key: "runtime", Value: "pod"})
 	_, stage := timeline.BeginContext(ctx, tl, "work")
 	var wg sync.WaitGroup
 	for _, value := range []string{"a", "b"} {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			stage.End(errors.New(value), timeline.WithCode(value), timeline.WithEndFields(timeline.Field{Key: "result", Value: value}))
+			stage.End(errors.New(value), timeline.WithCode(value), timeline.WithEndAttributes(timeline.Attribute{Key: "result", Value: value}))
 		}()
 	}
 	wg.Wait()
@@ -68,16 +68,16 @@ func TestFinalFieldsAndResultAreAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := final.Stages[0]
-	if v, _ := timeline.FieldValue[string](r.Fields, "result"); v != r.Error || r.Code != r.Error {
+	if v, _ := timeline.AttributeValue[string](r.Attributes, "result"); v != r.Error || r.Code != r.Error {
 		t.Fatalf("mixed winners: %+v", r)
 	}
-	tl.SetFields(timeline.Field{Key: "runtime", Value: "bed"})
-	stage.End(nil, timeline.WithEndFields(timeline.Field{Key: "result", Value: "late"}))
+	tl.SetAttributes(timeline.Attribute{Key: "runtime", Value: "bed"})
+	stage.End(nil, timeline.WithEndAttributes(timeline.Attribute{Key: "result", Value: "late"}))
 	again, err := tl.Snapshot(context.Background())
 	if err != nil || !reflect.DeepEqual(final, again) {
 		t.Fatalf("final mutated: %+v, %v", again, err)
 	}
-	if v, _ := timeline.FieldValue[string](final.Fields, "runtime"); v != "pod" {
+	if v, _ := timeline.AttributeValue[string](final.Attributes, "runtime"); v != "pod" {
 		t.Fatalf("runtime=%q", v)
 	}
 }

@@ -16,7 +16,7 @@ import (
 func newTimeline(t *testing.T) (context.Context, timeline.Timeline) {
 	t.Helper()
 	ctx := context.Background()
-	tl, err := gospantimeline.New(ctx, t.Name(), "operation", timeline.Field{Key: "attempt", Value: 1})
+	tl, err := gospantimeline.New(ctx, t.Name(), "operation", timeline.Attribute{Key: "attempt", Value: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,17 +83,17 @@ func TestNestedAndOverlappingStages(t *testing.T) {
 	}
 }
 
-func TestStageResultsAndDetachedFields(t *testing.T) {
+func TestStageResultsAndDetachedAttributes(t *testing.T) {
 	ctx, tl := newTimeline(t)
-	fields := []timeline.Field{{Key: "count", Value: 1}}
-	_, failed := timeline.BeginContext(ctx, tl, "failed", timeline.WithFields(fields...))
-	fields[0].Value = 99
-	failed.SetFields(timeline.Field{Key: "count", Value: 2})
+	attributes := []timeline.Attribute{{Key: "count", Value: 1}}
+	_, failed := timeline.BeginContext(ctx, tl, "failed", timeline.WithAttributes(attributes...))
+	attributes[0].Value = 99
+	failed.SetAttributes(timeline.Attribute{Key: "count", Value: 2})
 	before := snapshot(t, tl)
 	failure := errors.New("metadata commit failed")
 	failed.End(failure)
 	failed.End(nil)
-	failed.SetFields(timeline.Field{Key: "count", Value: 3})
+	failed.SetAttributes(timeline.Attribute{Key: "count", Value: 3})
 	_, canceled := timeline.BeginContext(ctx, tl, "canceled")
 	canceled.End(fmt.Errorf("waiting: %w", context.DeadlineExceeded))
 	final, err := tl.Finish(context.Background(), failure)
@@ -103,14 +103,14 @@ func TestStageResultsAndDetachedFields(t *testing.T) {
 	if final.Stages[0].Status != timeline.Failed || final.Stages[0].Error != failure.Error() || final.Stages[1].Status != timeline.Canceled {
 		t.Fatalf("lost stage result: %+v", final.Stages)
 	}
-	if string(before.Stages[0].Fields["count"]) != "2" || string(final.Stages[0].Fields["count"]) != "2" || string(final.Fields["attempt"]) != "1" {
-		t.Fatal("recorded field values changed")
+	if string(before.Stages[0].Attributes["count"]) != "2" || string(final.Stages[0].Attributes["count"]) != "2" || string(final.Attributes["attempt"]) != "1" {
+		t.Fatal("recorded attribute values changed")
 	}
-	final.Fields["attempt"][0] = '4'
-	final.Stages[0].Fields["count"][0] = '5'
+	final.Attributes["attempt"][0] = '4'
+	final.Stages[0].Attributes["count"][0] = '5'
 	final.Stages[0].Name = "changed"
 	fresh := snapshot(t, tl)
-	if string(fresh.Fields["attempt"]) != "1" || string(fresh.Stages[0].Fields["count"]) != "2" || fresh.Stages[0].Name != "failed" {
+	if string(fresh.Attributes["attempt"]) != "1" || string(fresh.Stages[0].Attributes["count"]) != "2" || fresh.Stages[0].Name != "failed" {
 		t.Fatal("caller mutation reached retained records")
 	}
 }
@@ -128,7 +128,7 @@ func TestFinishRejectsActiveStagesThenFreezesFirstResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	returnedCtx, ignored := timeline.BeginContext(ctx, tl, "too late")
-	ignored.SetFields(timeline.Field{Key: "ignored", Value: true})
+	ignored.SetAttributes(timeline.Attribute{Key: "ignored", Value: true})
 	ignored.End(errors.New("ignored"))
 	second, err := tl.Finish(context.Background(), errors.New("too late"))
 	if err != nil || returnedCtx != ctx || !reflect.DeepEqual(first, second) || !reflect.DeepEqual(first, snapshot(t, tl)) {
@@ -193,7 +193,7 @@ func TestConcurrentStagesAndSnapshots(t *testing.T) {
 			defer wg.Done()
 			parentCtx, parent := timeline.BeginContext(ctx, tl, fmt.Sprintf("parent-%d", i))
 			_, child := timeline.BeginContext(parentCtx, tl, "child")
-			child.SetFields(timeline.Field{Key: "worker", Value: i})
+			child.SetAttributes(timeline.Attribute{Key: "worker", Value: i})
 			child.End(nil)
 			_ = snapshot(t, tl)
 			parent.End(nil)

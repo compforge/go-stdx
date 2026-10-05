@@ -19,17 +19,17 @@ import (
 )
 
 type recorder struct {
-	mu       sync.Mutex
-	tracer   *gospan.Tracer
-	root     *gospan.Span
-	rootCtx  context.Context
-	sink     *projection
-	active   int
-	sequence uint64
-	fieldErr error // first encoding error; lost input keeps subsequent snapshots incomplete
-	finished bool
-	imports  *timeline.Recorder
-	stages   map[timeline.StageID]*stage
+	mu           sync.Mutex
+	tracer       *gospan.Tracer
+	root         *gospan.Span
+	rootCtx      context.Context
+	sink         *projection
+	active       int
+	sequence     uint64
+	attributeErr error // first encoding error; lost input keeps subsequent snapshots incomplete
+	finished     bool
+	imports      *timeline.Recorder
+	stages       map[timeline.StageID]*stage
 }
 
 type stage struct {
@@ -47,11 +47,11 @@ var _ timeline.StageHandle = (*stage)(nil)
 // New begins an operation with a non-empty, immutable caller-supplied ID.
 // It does not bind the returned Timeline to context. The construction context
 // does not own the operation lifetime; the completion owner must call Finish.
-func New(_ context.Context, id, operation string, fields ...timeline.Field) (timeline.Timeline, error) {
+func New(_ context.Context, id, operation string, attributes ...timeline.Attribute) (timeline.Timeline, error) {
 	if id == "" {
 		return nil, timeline.ErrEmptyID
 	}
-	initialAttrs, err := attrs(fields)
+	initialAttrs, err := attrs(attributes)
 	if err != nil {
 		return nil, err
 	}
@@ -82,16 +82,16 @@ func (t *recorder) Begin(name string, opts ...timeline.StageOption) timeline.Sta
 		Name: name, StartedAt: now.UTC(), Status: timeline.Running}
 	for _, opt := range opts {
 		if err := opt(&data); err != nil {
-			t.fieldErr = errors.Join(t.fieldErr, err)
+			t.attributeErr = errors.Join(t.attributeErr, err)
 			return inertStage{}
 		}
 	}
 	if data.ID == "" || data.ID == data.ParentID || data.ID == t.sink.rootID || data.StartedAt.IsZero() {
-		t.fieldErr = errors.Join(t.fieldErr, timeline.ErrInvalidStage)
+		t.attributeErr = errors.Join(t.attributeErr, timeline.ErrInvalidStage)
 		return inertStage{}
 	}
 	if _, exists := t.stages[data.ID]; exists {
-		t.fieldErr = errors.Join(t.fieldErr, timeline.ErrConflict)
+		t.attributeErr = errors.Join(t.attributeErr, timeline.ErrConflict)
 		return inertStage{}
 	}
 	// Parent IDs are timeline data; only a local live handle supplies a native parent.
@@ -99,7 +99,7 @@ func (t *recorder) Begin(name string, opts ...timeline.StageOption) timeline.Sta
 	if parent := t.stages[data.ParentID]; parent != nil {
 		spanCtx = parent.spanCtx
 	}
-	data.Fields = cloneFields(data.Fields)
+	data.Attributes = cloneAttributes(data.Attributes)
 	spanCtx, span := t.tracer.Start(spanCtx, name, slog.Any(boundaryKey, boundary{data}))
 	s := &stage{owner: t, span: span, data: data, started: now, spanCtx: spanCtx}
 	if !data.StartedAt.Equal(now) {
@@ -127,19 +127,19 @@ func (t *recorder) Record(data timeline.Stage) error {
 	return nil
 }
 
-func (t *recorder) SetFields(fields ...timeline.Field) {
+func (t *recorder) SetAttributes(attributes ...timeline.Attribute) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if !t.finished {
-		t.root.SetAttrs(t.attrs(fields)...)
+		t.root.SetAttrs(t.attrs(attributes)...)
 	}
 }
 
-func (s *stage) SetFields(fields ...timeline.Field) {
+func (s *stage) SetAttributes(attributes ...timeline.Attribute) {
 	s.owner.mu.Lock()
 	defer s.owner.mu.Unlock()
 	if !s.ended {
-		s.span.SetAttrs(s.owner.attrs(fields)...)
+		s.span.SetAttrs(s.owner.attrs(attributes)...)
 	}
 }
 
@@ -152,14 +152,14 @@ func (s *stage) End(err error, opts ...timeline.EndOption) {
 	now := time.Now()
 	data := s.data
 	data.FinishedAt = now.UTC()
-	data.Fields = nil // End options add final fields; prior SetFields stay in the projection.
+	data.Attributes = nil // End options add final attributes; prior SetAttributes stay in the projection.
 	for _, opt := range opts {
 		if optionErr := opt(&data); optionErr != nil {
-			s.owner.fieldErr = errors.Join(s.owner.fieldErr, optionErr)
+			s.owner.attributeErr = errors.Join(s.owner.attributeErr, optionErr)
 		}
 	}
 	if data.FinishedAt.IsZero() || data.FinishedAt.Before(data.StartedAt) {
-		s.owner.fieldErr = errors.Join(s.owner.fieldErr, timeline.ErrInvalidStage)
+		s.owner.attributeErr = errors.Join(s.owner.attributeErr, timeline.ErrInvalidStage)
 	}
 	if !s.started.IsZero() && data.FinishedAt.Equal(now) {
 		data.Elapsed = now.Sub(s.started)
@@ -213,11 +213,11 @@ func (t *recorder) closedSnapshot(ctx context.Context) (timeline.Snapshot, error
 	return t.snapshot(err)
 }
 
-// snapshot combines transport collection and field encoding failures without
+// snapshot combines transport collection and attribute encoding failures without
 // changing the operation result. Invalid observations must not look complete.
 func (t *recorder) snapshot(collectionErr error) (timeline.Snapshot, error) {
 	t.mu.Lock()
-	err := errors.Join(collectionErr, t.fieldErr)
+	err := errors.Join(collectionErr, t.attributeErr)
 	t.mu.Unlock()
 	imports, importErr := t.imports.Snapshot(context.Background())
 	if errors.Is(importErr, timeline.ErrNotFound) && imports.Collection.LocalFlushed {
@@ -240,37 +240,37 @@ func (t *recorder) snapshot(collectionErr error) (timeline.Snapshot, error) {
 
 // Caller holds mu; encoding happens before events are queued so later caller
 // mutations cannot change recorded values or race with the projection writer.
-func (t *recorder) attrs(fields []timeline.Field) []slog.Attr {
-	result, err := attrs(fields)
-	if t.fieldErr == nil {
-		t.fieldErr = err
+func (t *recorder) attrs(attributes []timeline.Attribute) []slog.Attr {
+	result, err := attrs(attributes)
+	if t.attributeErr == nil {
+		t.attributeErr = err
 	}
 	return result
 }
 
-func attrs(fields []timeline.Field) ([]slog.Attr, error) {
-	result := make([]slog.Attr, 0, len(fields))
+func attrs(attributes []timeline.Attribute) ([]slog.Attr, error) {
+	result := make([]slog.Attr, 0, len(attributes))
 	var firstErr error
-	for _, field := range fields {
-		data, err := json.Marshal(field.Value)
+	for _, attribute := range attributes {
+		data, err := json.Marshal(attribute.Value)
 		if err != nil {
 			if firstErr == nil {
-				firstErr = fmt.Errorf("%w: %q: %v", timeline.ErrInvalidField, field.Key, err)
+				firstErr = fmt.Errorf("%w: %q: %v", timeline.ErrInvalidAttribute, attribute.Key, err)
 			}
 			continue
 		}
-		result = append(result, slog.Any(field.Key, fieldValue{value: data}))
+		result = append(result, slog.Any(attribute.Key, attributeValue{value: data}))
 	}
 	return result, firstErr
 }
 
 type inertStage struct{}
 
-type fieldValue struct{ value json.RawMessage }
+type attributeValue struct{ value json.RawMessage }
 
-func (inertStage) SetFields(...timeline.Field)      {}
-func (inertStage) End(error, ...timeline.EndOption) {}
-func (inertStage) ID() timeline.StageID             { return "" }
+func (inertStage) SetAttributes(...timeline.Attribute) {}
+func (inertStage) End(error, ...timeline.EndOption)    {}
+func (inertStage) ID() timeline.StageID                { return "" }
 
 func (t *recorder) Flush(ctx context.Context) error {
 	_, err := t.Snapshot(ctx)

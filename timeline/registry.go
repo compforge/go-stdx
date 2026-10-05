@@ -11,7 +11,7 @@ var ErrAlreadyExists = errors.New("timeline: ID is already registered")
 // Factory creates a fresh Timeline with the supplied ID. It must not publish
 // the instance elsewhere: the Registry owns registration and completion cleanup.
 // On error it must release any resources it allocated.
-type Factory func(ctx context.Context, id, operation string, fields ...Field) (Timeline, error)
+type Factory func(ctx context.Context, id, operation string, attributes ...Attribute) (Timeline, error)
 
 // Registry indexes active timelines within one process. Share an instance across
 // components; business code owns ID generation, propagation and completion.
@@ -33,7 +33,7 @@ func NewRegistry(factory Factory) *Registry {
 // for the same ID return ErrAlreadyExists, including while its factory is running.
 // A failed creation releases the ID. The caller owns Finish on the returned
 // Timeline; independent components should only end their own stages.
-func (r *Registry) Create(ctx context.Context, id, operation string, fields ...Field) (Timeline, error) {
+func (r *Registry) Create(ctx context.Context, id, operation string, attributes ...Attribute) (Timeline, error) {
 	if id == "" {
 		return nil, ErrEmptyID
 	}
@@ -48,7 +48,7 @@ func (r *Registry) Create(ctx context.Context, id, operation string, fields ...F
 
 	// Reserve before calling the backend, but do not serialize unrelated IDs
 	// or lookups behind backend initialization.
-	tl, err := r.factory(ctx, id, operation, fields...)
+	tl, err := r.factory(ctx, id, operation, attributes...)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err != nil {

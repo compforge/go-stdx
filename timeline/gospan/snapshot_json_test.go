@@ -14,13 +14,13 @@ import (
 func TestSnapshotJSONRoundTripAndOwnership(t *testing.T) {
 	ctx := context.Background()
 	input := map[string]any{"names": []string{"before"}, "id": uint64(math.MaxUint64)}
-	tl, err := New(ctx, t.Name(), "start", timeline.Field{Key: "input", Value: input})
+	tl, err := New(ctx, t.Name(), "start", timeline.Attribute{Key: "input", Value: input})
 	if err != nil {
 		t.Fatal(err)
 	}
 	input["names"].([]string)[0] = "after"
 	parentCtx, parent := timeline.BeginContext(ctx, tl, "parent")
-	_, child := timeline.BeginContext(parentCtx, tl, "child", timeline.WithFields(timeline.Field{Key: "count", Value: 9007199254740993}))
+	_, child := timeline.BeginContext(parentCtx, tl, "child", timeline.WithAttributes(timeline.Attribute{Key: "count", Value: 9007199254740993}))
 	progress, err := tl.Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -44,19 +44,19 @@ func TestSnapshotJSONRoundTripAndOwnership(t *testing.T) {
 		ID    uint64   `json:"id"`
 	}
 	want.Names, want.ID = []string{"before"}, math.MaxUint64
-	got, ok := timeline.FieldValue[struct {
+	got, ok := timeline.AttributeValue[struct {
 		Names []string `json:"names"`
 		ID    uint64   `json:"id"`
-	}](restored.Fields, "input")
+	}](restored.Attributes, "input")
 	if !ok || !reflect.DeepEqual(got, want) {
 		t.Fatalf("input=%+v ok=%v", got, ok)
 	}
-	count, ok := timeline.FieldValue[int64](restored.Stages[1].Fields, "count")
+	count, ok := timeline.AttributeValue[int64](restored.Stages[1].Attributes, "count")
 	if !ok || count != 9007199254740993 {
 		t.Fatalf("integer lost precision: %d %v", count, ok)
 	}
 	// An exported byte slice cannot mutate either a later snapshot or its peer.
-	final.Fields["input"][0] = '!'
+	final.Attributes["input"][0] = '!'
 	again, err := tl.Snapshot(ctx)
 	if err != nil || !reflect.DeepEqual(again, restored) {
 		t.Fatalf("snapshot aliases recorder: %+v %v", again, err)
@@ -79,9 +79,9 @@ func roundTripSnapshot(t *testing.T, original timeline.Snapshot) timeline.Snapsh
 	return restored
 }
 
-func TestInvalidFieldsReportCollectionFailureAndStillFinish(t *testing.T) {
+func TestInvalidAttributesReportCollectionFailureAndStillFinish(t *testing.T) {
 	ctx := context.Background()
-	if _, err := New(ctx, t.Name(), "invalid", timeline.Field{Key: "channel", Value: make(chan int)}); !errors.Is(err, timeline.ErrInvalidField) {
+	if _, err := New(ctx, t.Name(), "invalid", timeline.Attribute{Key: "channel", Value: make(chan int)}); !errors.Is(err, timeline.ErrInvalidAttribute) {
 		t.Fatalf("constructor err=%v", err)
 	}
 	for _, call := range []string{"begin", "set", "end"} {
@@ -90,23 +90,23 @@ func TestInvalidFieldsReportCollectionFailureAndStillFinish(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			invalid := timeline.Field{Key: "nan", Value: math.NaN()}
+			invalid := timeline.Attribute{Key: "nan", Value: math.NaN()}
 			var stage timeline.StageHandle
 			if call == "begin" {
-				_, stage = timeline.BeginContext(ctx, tl, "child", timeline.WithFields(invalid))
+				_, stage = timeline.BeginContext(ctx, tl, "child", timeline.WithAttributes(invalid))
 			} else {
 				_, stage = timeline.BeginContext(ctx, tl, "child")
 			}
 			if call == "set" {
-				tl.SetFields(invalid)
+				tl.SetAttributes(invalid)
 			}
 			if call == "end" {
-				stage.End(nil, timeline.WithEndFields(invalid))
+				stage.End(nil, timeline.WithEndAttributes(invalid))
 			} else {
 				stage.End(nil)
 			}
 			final, err := tl.Finish(ctx, nil)
-			if !errors.Is(err, timeline.ErrInvalidField) || (final.Collection.LocalFlushed && final.Collection.StoreRead) || final.Status != timeline.Succeeded {
+			if !errors.Is(err, timeline.ErrInvalidAttribute) || (final.Collection.LocalFlushed && final.Collection.StoreRead) || final.Status != timeline.Succeeded {
 				t.Fatalf("result=%+v err=%v", final, err)
 			}
 			if _, err := json.Marshal(final); err != nil {

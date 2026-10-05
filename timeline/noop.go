@@ -3,14 +3,14 @@ package timeline
 import "context"
 
 // Noop returns a disabled timeline retaining id. It records no intervals or
-// fields, and leaves contexts unchanged. An empty ID denotes untracked work.
+// attributes, and leaves contexts unchanged. An empty ID denotes untracked work.
 func Noop(id string) Timeline { return noop{id: id} }
 
 type noop struct{ id string }
 
 func (t noop) ID() string { return t.id }
 
-func (noop) SetFields(...Field)                       {}
+func (noop) SetAttributes(...Attribute)               {}
 func (noop) Record(Stage) error                       { return nil }
 func (noop) Begin(string, ...StageOption) StageHandle { return noopStage{} }
 func (t noop) Snapshot(context.Context) (Snapshot, error) {
@@ -24,6 +24,6 @@ func (noop) Flush(context.Context) error { return nil }
 
 type noopStage struct{}
 
-func (noopStage) ID() StageID             { return "" }
-func (noopStage) SetFields(...Field)      {}
-func (noopStage) End(error, ...EndOption) {}
+func (noopStage) ID() StageID                { return "" }
+func (noopStage) SetAttributes(...Attribute) {}
+func (noopStage) End(error, ...EndOption)    {}

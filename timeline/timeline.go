@@ -26,8 +26,8 @@ type Timeline interface {
 	// ID is the immutable, caller-supplied identity of this operation.
 	// Its meaning and uniqueness scope belong to the caller.
 	ID() string
-	// SetFields records operation attributes; the coordinator owns these keys.
-	SetFields(fields ...Field)
+	// SetAttributes records operation attributes; the coordinator owns these keys.
+	SetAttributes(attributes ...Attribute)
 	// Begin starts a stage using the local clock unless source times are supplied.
 	// Parentage is explicit; BeginContext is an optional context convenience.
 	Begin(name string, opts ...StageOption) StageHandle
@@ -50,9 +50,9 @@ type Timeline interface {
 // its children.
 type StageHandle interface {
 	ID() StageID
-	// SetFields merges attributes; the last value for a key wins.
-	SetFields(fields ...Field)
-	// End atomically records final fields and the result exactly once. Later End and SetFields calls have
+	// SetAttributes merges attributes; the last value for a key wins.
+	SetAttributes(attributes ...Attribute)
+	// End atomically records final attributes and the result exactly once. Later End and SetAttributes calls have
 	// no effect. A nil error means success.
 	End(err error, opts ...EndOption)
 }
@@ -61,13 +61,13 @@ var ErrInvalidStage = errors.New("timeline: invalid stage")
 
 var ErrEmptyID = errors.New("timeline: ID must not be empty")
 
-var ErrInvalidField = errors.New("timeline: field is not JSON serializable")
+var ErrInvalidAttribute = errors.New("timeline: attribute is not JSON serializable")
 
 var ErrActiveStages = errors.New("timeline: operation still has active stages")
 
-// Field is recording input. Values must be JSON serializable and must not be
+// Attribute is recording input. Values must be JSON serializable and must not be
 // mutated during the recording call. Implementations encode them before returning.
-type Field struct {
+type Attribute struct {
 	Key   string `json:"key"`
 	Value any    `json:"value"`
 }
@@ -99,7 +99,7 @@ type Stage struct {
 	FinishedAt time.Time                  `json:"finished_at,omitempty"`
 	Status     Status                     `json:"status"`
 	Error      string                     `json:"error,omitempty"`
-	Fields     map[string]json.RawMessage `json:"fields,omitempty"`
+	Attributes map[string]json.RawMessage `json:"attributes,omitempty"`
 	// Code is an optional caller-defined value, independent of Status and Error.
 	// Timeline records it without inferring or interpreting its meaning.
 	Code string `json:"code,omitempty"`
@@ -117,7 +117,7 @@ func (s Stage) Duration(capturedAt time.Time) time.Duration {
 // overlapping intervals stay overlapping rather than being added together.
 // Collection describes the observations this reader can confirm. A successful
 // read does not prove all processes have flushed or that no late stage remains.
-// All slices and JSON field values belong to this snapshot. Standard json.Marshal
+// All slices and JSON attribute values belong to this snapshot. Standard json.Marshal
 // and json.Unmarshal persist it without a backend or a caller-defined DTO.
 // JSON stores actors once in a payload-local table; stage actor_ref values are
 // resolved back to full Actors when decoding.
@@ -131,7 +131,7 @@ type Snapshot struct {
 	CapturedAt  time.Time                  `json:"captured_at"`
 	Status      Status                     `json:"status"`
 	Error       string                     `json:"error,omitempty"`
-	Fields      map[string]json.RawMessage `json:"fields,omitempty"`
+	Attributes  map[string]json.RawMessage `json:"attributes,omitempty"`
 	Stages      []Stage                    `json:"stages,omitempty"`
 	Collection  Collection                 `json:"collection"`
 }

@@ -21,7 +21,7 @@ func (d Document) Snapshot(capturedAt time.Time) Snapshot {
 	}
 	return Snapshot{ID: d.ID, RootStageID: d.RootStageID, Operation: d.Operation,
 		StartedAt: d.StartedAt, FinishedAt: d.FinishedAt, CapturedAt: capturedAt,
-		Status: status, Error: d.Error, Fields: d.Fields, Stages: stages}
+		Status: status, Error: d.Error, Attributes: d.Attributes, Stages: stages}
 }
 func sortStages(stages []Stage) {
 	slices.SortFunc(stages, func(a, b Stage) int {

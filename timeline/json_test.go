@@ -17,13 +17,13 @@ func actorDocument() timeline.Document {
 	actors := []timeline.Actor{{}, {ID: "pod-a", Name: "sandctl-a"}, {ID: "pod-a", Name: "sandctl-a"}, {ID: "pod-a"}, {Name: "sandctl-a"}, {ID: "pod-a", Name: "renamed"}}
 	doc := timeline.Document{ID: "operation", RootStageID: "operation:operation", OperationRecord: timeline.OperationRecord{
 		Revision: 3, Operation: "start", StartedAt: at, FinishedAt: at.Add(time.Minute), Status: timeline.Failed, Error: "timeout",
-		Fields: map[string]json.RawMessage{"attempt": json.RawMessage(`9007199254740993`)},
+		Attributes: map[string]json.RawMessage{"attempt": json.RawMessage(`9007199254740993`)},
 	}}
 	for i, actor := range actors {
 		doc.Stages = append(doc.Stages, timeline.StageUpdate{Revision: uint64(i + 1), Stage: timeline.Stage{
 			ID: timeline.StageID(fmt.Sprint(i)), ParentID: doc.RootStageID, Name: "step", Actor: actor,
 			StartedAt: at.Add(time.Duration(i) * time.Second), FinishedAt: at.Add(time.Duration(i+1) * time.Second), Elapsed: time.Second,
-			Status: timeline.Failed, Error: "source failure", Code: "ResourceQuotaExceeded", Fields: map[string]json.RawMessage{"count": json.RawMessage(`18446744073709551615`)},
+			Status: timeline.Failed, Error: "source failure", Code: "ResourceQuotaExceeded", Attributes: map[string]json.RawMessage{"count": json.RawMessage(`18446744073709551615`)},
 		}})
 	}
 	return doc
@@ -41,6 +41,19 @@ func assertActorWire(t *testing.T, value any) []byte {
 	}
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		t.Fatal(err)
+	}
+	var operation map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &operation); err != nil {
+		t.Fatal(err)
+	}
+	for _, object := range append([]map[string]json.RawMessage{operation}, wire.Stages...) {
+		if _, ok := object["fields"]; ok {
+			t.Fatalf("legacy attribute key emitted: %s", raw)
+		}
+		var attributes map[string]json.RawMessage
+		if err := json.Unmarshal(object["attributes"], &attributes); err != nil || len(attributes) != 1 {
+			t.Fatalf("missing attributes: %s (error: %v)", raw, err)
+		}
 	}
 	wantActors := []timeline.Actor{{ID: "pod-a", Name: "sandctl-a"}, {ID: "pod-a"}, {Name: "sandctl-a"}, {ID: "pod-a", Name: "renamed"}}
 	if !reflect.DeepEqual(wire.Actors, wantActors) {
