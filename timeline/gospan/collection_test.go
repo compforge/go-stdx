@@ -119,7 +119,7 @@ func TestConstructorIsolatesForeignGospanContext(t *testing.T) {
 	_, stage := timeline.BeginWithContext(ctx, tl, "child")
 	stage.End(nil)
 	s, err := tl.Finish(context.Background(), nil)
-	if err != nil || s.Operation != "own" || len(s.Stages) != 1 || s.Stages[0].ParentID != s.RootStageID {
+	if err != nil || s.Operation != "own" || len(s.Stages) != 1 || s.Stages[0].ParentID != "" {
 		t.Fatalf("foreign tracer corrupted root: %+v err=%v", s, err)
 	}
 	stats := tl.(*recorder).tracer.Stats()

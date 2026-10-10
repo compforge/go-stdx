@@ -100,7 +100,7 @@ func TestNamedStageAmbiguityParentAndReuse(t *testing.T) {
 	if third.ID() == first.ID() || third.ID() == second.ID() {
 		t.Fatal("reused old identity")
 	}
-	_, child, err := m.BeginContext(parentCtx, "task", "child", timeline.WithStageActor(timeline.Actor{ID: "worker"}))
+	_, child, err := m.BeginContext(parentCtx, "task", "child", timeline.WithParent(third.ID()), timeline.WithStageActor(timeline.Actor{ID: "worker"}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -78,7 +78,7 @@ func TestRecordCompletedDataAndLateReplay(t *testing.T) {
 			t.Fatalf("late record changed operation: %+v", got)
 		}
 		stage := got.Stages[0]
-		if stage.Name != original.Name || string(stage.Attributes["container"]) != `"sandbox"` || stage.Duration(got.CapturedAt) != 3*time.Second || stage.ParentID != got.RootStageID || stage.Actor != (timeline.Actor{}) {
+		if stage.Name != original.Name || string(stage.Attributes["container"]) != `"sandbox"` || stage.Duration(got.CapturedAt) != 3*time.Second || stage.ParentID != "" || stage.Actor != (timeline.Actor{}) {
 			t.Fatalf("bad imported stage: %+v", stage)
 		}
 		raw, err := json.Marshal(got)
@@ -293,8 +293,8 @@ func TestStagesAcceptAbsentParentAndRetainLateAssociation(t *testing.T) {
 		for _, stage := range after.Stages {
 			if stage.ID == parentID {
 				parentFound = true
-				if stage.ParentID != after.RootStageID {
-					t.Fatalf("omitted parent must default to root: %+v", stage)
+				if stage.ParentID != "" {
+					t.Fatalf("omitted parent must stay empty: %+v", stage)
 				}
 			} else if stage.ParentID != parentID {
 				t.Fatalf("late association lost: %+v", stage)
@@ -302,6 +302,31 @@ func TestStagesAcceptAbsentParentAndRetainLateAssociation(t *testing.T) {
 		}
 		if !parentFound {
 			t.Fatal("late parent was not recorded")
+		}
+	})
+}
+
+// Context is a carrier, never a source of implicit parentage.
+func TestContextDoesNotAssignParent(t *testing.T) {
+	recordingBackends(t, func(t *testing.T, tl timeline.Timeline) {
+		ctx, parent := timeline.BeginWithContext(context.Background(), tl, "parent")
+		_, independent := timeline.BeginWithContext(ctx, tl, "independent")
+		_, child := timeline.BeginWithContext(ctx, tl, "child", timeline.WithParent(parent.ID()))
+		independent.End(nil)
+		child.End(nil)
+		parent.End(nil)
+		snapshot, err := tl.Snapshot(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, stage := range snapshot.Stages {
+			want := timeline.StageID("")
+			if stage.ID == child.ID() {
+				want = parent.ID()
+			}
+			if stage.ParentID != want {
+				t.Fatalf("stage %s parent = %q, want %q", stage.Name, stage.ParentID, want)
+			}
 		}
 	})
 }

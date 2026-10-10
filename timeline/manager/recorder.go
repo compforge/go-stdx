@@ -107,8 +107,8 @@ func (t *recorder) Start(ctx context.Context, operation string, attributes ...At
 	return t.Flush(ctx)
 }
 
-// StageRef can cross a process boundary as plain data. Only identity is carried;
-// cancellation, deadlines and a mutable recorder never cross with it.
+// StageRef carries explicit stage identity as data. Context binding does not
+// assign a parent to subsequent stages.
 type StageRef struct {
 	TimelineID string  `json:"timeline_id"`
 	StageID    StageID `json:"stage_id"`
@@ -132,7 +132,7 @@ func (t *recorder) Begin(name string, opts ...StageOption) StageHandle {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := time.Now()
-	data := Stage{ID: StageID(uuid.NewString()), ParentID: model.RootID(t.id), Name: name, StartedAt: now.UTC(), Status: Running, Actor: t.actor}
+	data := Stage{ID: StageID(uuid.NewString()), Name: name, StartedAt: now.UTC(), Status: Running, Actor: t.actor}
 	for _, opt := range opts {
 		if err := opt(&data); err != nil {
 			t.recordError(err)

@@ -79,7 +79,7 @@ func TestRegistryConcurrentCreateAndParallelRecording(t *testing.T) {
 			if got, ok := timeline.FromContext(childCtx); !ok || got != owner {
 				t.Error("Begin replaced registry context handle")
 			}
-			_, child := timeline.BeginWithContext(childCtx, tl, "child")
+			_, child := timeline.BeginWithContext(childCtx, tl, "child", timeline.WithParent(stage.ID()))
 			child.End(nil)
 			stage.End(nil)
 		}()

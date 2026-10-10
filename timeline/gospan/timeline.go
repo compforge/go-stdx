@@ -79,7 +79,7 @@ func (t *recorder) Begin(name string, opts ...timeline.StageOption) timeline.Sta
 		return inertStage{}
 	}
 	now := time.Now()
-	data := timeline.Stage{ID: timeline.StageID(uuid.NewString()), ParentID: t.sink.rootID,
+	data := timeline.Stage{ID: timeline.StageID(uuid.NewString()),
 		Name: name, StartedAt: now.UTC(), Status: timeline.Running}
 	for _, opt := range opts {
 		if err := opt(&data); err != nil {

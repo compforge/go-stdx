@@ -44,7 +44,7 @@ func snapshot(t *testing.T, tl timeline.Timeline) timeline.Snapshot {
 func TestNestedAndOverlappingStages(t *testing.T) {
 	ctx, tl := newTimeline(t)
 	parentCtx, parent := timeline.BeginWithContext(ctx, tl, "prepare")
-	_, child := timeline.BeginWithContext(parentCtx, tl, "workspace")
+	_, child := timeline.BeginWithContext(parentCtx, tl, "workspace", timeline.WithParent(parent.ID()))
 	_, sibling := timeline.BeginWithContext(ctx, tl, "capacity")
 	partial := snapshot(t, tl)
 	if partial.Status != timeline.Running || len(partial.Stages) != 3 {
@@ -62,7 +62,7 @@ func TestNestedAndOverlappingStages(t *testing.T) {
 	}
 	// Equal wall-clock timestamps are ordered by ID, not by creation order.
 	p, c, s := byID(partial, parent.ID()), byID(partial, child.ID()), byID(partial, sibling.ID())
-	if p.ParentID != partial.RootStageID || c.ParentID != p.ID || s.ParentID != partial.RootStageID {
+	if p.ParentID != "" || c.ParentID != p.ID || s.ParentID != "" {
 		t.Fatalf("lost parent relationships: %+v", partial.Stages)
 	}
 	child.End(nil)
@@ -176,7 +176,7 @@ func TestForeignTimelineContextCreatesIndependentRoot(t *testing.T) {
 	child.End(nil)
 	parent.End(nil)
 	got := snapshot(t, second)
-	if len(got.Stages) != 1 || got.Stages[0].ParentID != got.RootStageID {
+	if len(got.Stages) != 1 || got.Stages[0].ParentID != "" {
 		t.Fatalf("foreign IDs contaminated timeline: %+v", got)
 	}
 	if owner, _ := timeline.FromContext(childCtx); owner != first {
@@ -192,7 +192,7 @@ func TestConcurrentStagesAndSnapshots(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			parentCtx, parent := timeline.BeginWithContext(ctx, tl, fmt.Sprintf("parent-%d", i))
-			_, child := timeline.BeginWithContext(parentCtx, tl, "child")
+			_, child := timeline.BeginWithContext(parentCtx, tl, "child", timeline.WithParent(parent.ID()))
 			child.SetAttributes(timeline.Attribute{Key: "worker", Value: i})
 			child.End(nil)
 			_ = snapshot(t, tl)
@@ -205,7 +205,7 @@ func TestConcurrentStagesAndSnapshots(t *testing.T) {
 		t.Fatalf("lost concurrent stages: count=%d err=%v", len(final.Stages), err)
 	}
 	parents := make(map[timeline.StageID]bool)
-	parents[final.RootStageID] = true
+	parents[""] = true
 	for _, stage := range final.Stages {
 		parents[stage.ID] = true
 	}
