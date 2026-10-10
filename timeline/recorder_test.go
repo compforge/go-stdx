@@ -18,7 +18,7 @@ import (
 
 func handle(t *testing.T, id string, store timelinestore.Store, actor string) *timeline.Handle {
 	t.Helper()
-	tl, err := timeline.New(id, timeline.WithStore(store), timeline.WithActor(timeline.Actor{ID: actor, Name: "pod-" + actor}))
+	tl, err := timeline.New(id, timeline.WithActor(timeline.Actor{Name: "test"}), timeline.WithStore(store), timeline.WithActor(timeline.Actor{ID: actor, Name: "pod-" + actor}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,17 +166,17 @@ func TestFlushRetriesAcceptedRecordsWithoutDuplicating(t *testing.T) {
 	if len(doc.Stages) != 1 || doc.Revision != 2 {
 		t.Fatalf("retry: %+v", doc)
 	}
-	// Another coordinator cannot rewrite the accepted business outcome.
+	// Another observer can replace the operation result; the SDK does not arbitrate it.
 	other := handle(t, "retry", store, "other")
 	got, err := other.Finish(ctx, errors.New("conflicting outcome"))
-	if !errors.Is(err, timelinestore.ErrConflict) || got.Status != timeline.Succeeded {
+	if err != nil || got.Status != timeline.Failed {
 		t.Fatalf("terminal conflict: %+v %v", got, err)
 	}
 }
 
-func TestMergeIgnoresDelayedStageUpdates(t *testing.T) {
+func TestMergeUsesAcceptanceOrderWithinActor(t *testing.T) {
 	at := time.Now().UTC()
-	started := timelinestore.StageUpdate{Revision: 1, Stage: timeline.Stage{ID: "s", StartedAt: at, Status: timeline.Running}}
+	started := timelinestore.StageUpdate{Revision: 1, Stage: timeline.Stage{Actor: timeline.Actor{Name: "test"}, Name: "work", ID: "s", StartedAt: at, Status: timeline.Running}}
 	ended := started
 	ended.Revision, ended.FinishedAt, ended.Status = 2, at.Add(time.Second), timeline.Succeeded
 	store := timelinestore.NewMemoryStore()
@@ -276,9 +276,9 @@ func TestFlushDeadlineWhileAnotherFlushIsBlocked(t *testing.T) {
 	}
 }
 
-func TestActorIsOptionalAndMayContainOnlyName(t *testing.T) {
-	for _, actor := range []timeline.Actor{{}, {Name: "pod-a"}, {ID: "pod-uid"}} {
-		tl, err := timeline.New("actor", timeline.WithActor(actor))
+func TestActorMayContainOnlyNameOrID(t *testing.T) {
+	for _, actor := range []timeline.Actor{{Name: "pod-a"}, {ID: "pod-uid"}} {
+		tl, err := timeline.New("actor", timeline.WithActor(timeline.Actor{Name: "test"}), timeline.WithActor(actor))
 		if err != nil {
 			t.Fatal(err)
 		}

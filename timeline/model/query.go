@@ -23,7 +23,7 @@ func (s Snapshot) LatestFailedStage() (Stage, bool) {
 			continue
 		}
 		if !found || stage.FinishedAt.After(result.FinishedAt) ||
-			(stage.FinishedAt.Equal(result.FinishedAt) && stage.ID > result.ID) {
+			(stage.FinishedAt.Equal(result.FinishedAt) && (stage.ID > result.ID || (stage.ID == result.ID && stage.Actor.Key() > result.Actor.Key()))) {
 			result, found = stage, true
 		}
 	}

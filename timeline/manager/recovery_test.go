@@ -29,7 +29,7 @@ func TestRejectedTerminalAdmissionCanBeRetried(t *testing.T) {
 				}
 				return store.MemoryStore.Merge(ctx, id, u)
 			}
-			m := newManager(t, store, managed.Config{MaxPendingUpdates: 1, ExportTimeout: time.Second})
+			m := newManager(t, store, managed.Config{Actor: managed.Actor{Name: "test"}, MaxPendingUpdates: 1, ExportTimeout: time.Second})
 			var end func(error) error
 			if kind == "operation" {
 				if err := m.Start("task", "work"); err != nil {
@@ -48,7 +48,7 @@ func TestRejectedTerminalAdmissionCanBeRetried(t *testing.T) {
 				t.Fatalf("expected backpressure: %v", err)
 			}
 			if kind == "stage" {
-				snapshot, err := m.Read(context.Background(), "task")
+				snapshot, err := m.Read(context.Background(), "task", false)
 				if err != nil || len(snapshot.RunningStages()) != 1 {
 					t.Fatalf("rejected End changed stage: %+v %v", snapshot, err)
 				}
@@ -59,7 +59,7 @@ func TestRejectedTerminalAdmissionCanBeRetried(t *testing.T) {
 			if err := end(nil); err != nil {
 				t.Fatal(err)
 			}
-			snapshot, err := m.Read(context.Background(), "task")
+			snapshot, err := m.Read(context.Background(), "task", false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -75,7 +75,7 @@ func TestRejectedTerminalAdmissionCanBeRetried(t *testing.T) {
 }
 
 func TestRejectedAttributesDoNotChangeCachedFacts(t *testing.T) {
-	m := newManager(t, timelinestore.NewMemoryStore(), managed.Config{})
+	m := newManager(t, timelinestore.NewMemoryStore(), managed.Config{Actor: managed.Actor{Name: "test"}})
 	stage, err := m.Begin("task", "work")
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ func TestRejectedAttributesDoNotChangeCachedFacts(t *testing.T) {
 	if err = stage.End(nil); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := m.Read(context.Background(), "task")
+	snapshot, err := m.Read(context.Background(), "task", false)
 	if err != nil || len(snapshot.Stages) != 1 || snapshot.Stages[0].Status != timeline.Succeeded || len(snapshot.Stages[0].Attributes) != 0 {
 		t.Fatalf("rejected write changed facts: %+v %v", snapshot, err)
 	}

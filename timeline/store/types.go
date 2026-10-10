@@ -12,11 +12,11 @@ import (
 	"github.com/compforge/go-stdx/timeline/model"
 )
 
-var ErrConflict = errors.New("timeline: conflicting revision or immutable boundary")
+var ErrConflict = errors.New("timeline: invalid document identity or operation boundary")
 var ErrNotFound = errors.New("timeline: document not found")
 
-// OperationRecord holds independently optional start and finish facts. Accepted
-// boundaries are immutable; Revision orders attributes from the start writer.
+// OperationRecord holds independently optional start and finish observations.
+// Revision is writer-local metadata, not a cross-process ordering authority.
 type OperationRecord struct {
 	Revision   uint64                     `json:"revision"`
 	Operation  string                     `json:"operation"`
@@ -28,7 +28,7 @@ type OperationRecord struct {
 }
 
 // Document is the durable, current state of one timeline, without read-time
-// collection metadata. It retains one state per stage, not an event history.
+// collection metadata. It retains one state per (StageID, Actor.Key), not an event history.
 // JSON uses a document-local actors table and 1-based stage actor_ref values;
 // the Go data always contains full Actors.
 type Document struct {
@@ -45,21 +45,26 @@ type StageUpdate struct {
 	Revision uint64 `json:"revision"`
 }
 
-// Update contains only this writer's changes. Each value is a complete state
-// at its revision. Operation boundaries may arrive independently; stage owners write Stages.
+// Update contains only locally accepted changes. Stages carry full states;
+// operation start and finish boundaries may arrive independently.
 type Update struct {
 	Operation *OperationRecord
 	Stages    []StageUpdate
-	// Completed contains immutable imported intervals, with no caller-managed revision.
+	// Completed contains imported intervals, with no caller-managed revision.
 	Completed []model.Stage
 }
 
-// Store atomically merges updates into one document per ID. Older revisions are
-// ignored; equal revisions with different content and changed immutable boundaries
-// return ErrConflict. On error acceptance may be uncertain, so retry the same update.
-// Read returns detached data or ErrNotFound. Implementations support concurrent
-// callers and cancellation. Connections, schema and retention belong to the caller.
+// Store atomically merges actor-scoped updates into one document per ID. The last
+// accepted state replaces the same stage/actor; identical content is a no-op.
+// On error acceptance may be uncertain. Retrying unchanged content does not
+// duplicate records, but may overwrite a competing same-actor write.
+// Reads return detached data. Connections, schema and retention belong to callers.
 type Store interface {
 	Merge(context.Context, string, Update) error
 	Read(context.Context, string) (Document, error)
+	// MGet omits missing IDs and returns each found document once; order is unspecified.
+	MGet(context.Context, []string) ([]Document, error)
+	// Latest returns documents updated strictly after the time, ordered by
+	// updated_at DESC, id DESC. A nonpositive limit returns no documents.
+	Latest(context.Context, time.Time, int) ([]Document, error)
 }

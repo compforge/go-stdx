@@ -71,7 +71,7 @@ func TestStageCodeIndependentOfResult(t *testing.T) {
 	}
 }
 
-func TestRecordedCodeIsImmutable(t *testing.T) {
+func TestRecordedCodeUsesLastAcceptedState(t *testing.T) {
 	for _, status := range []timeline.Status{timeline.Succeeded, timeline.Failed, timeline.Canceled} {
 		t.Run(string(status), func(t *testing.T) {
 			recordingBackends(t, func(t *testing.T, tl timeline.Timeline) {
@@ -88,11 +88,11 @@ func TestRecordedCodeIsImmutable(t *testing.T) {
 					t.Fatalf("recorded code: %+v, %v", snapshot, err)
 				}
 				input.Code = "DifferentCode"
-				if err := tl.Record(input); !errors.Is(err, timelinestore.ErrConflict) {
+				if err := tl.Record(input); err != nil {
 					t.Fatalf("changed terminal code accepted: %v", err)
 				}
 				snapshot, err = tl.Snapshot(context.Background())
-				if err != nil || len(snapshot.Stages) != 1 || snapshot.Stages[0].Code != "Observed" {
+				if err != nil || len(snapshot.Stages) != 1 || snapshot.Stages[0].Code != "DifferentCode" {
 					t.Fatalf("rejected code changed facts: %+v %v", snapshot, err)
 				}
 			})

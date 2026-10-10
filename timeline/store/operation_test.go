@@ -1,7 +1,6 @@
 package store_test
 
 import (
-	"errors"
 	"testing"
 	"time"
 
@@ -33,7 +32,7 @@ func TestOptionalOperationBoundariesMergeInEitherOrder(t *testing.T) {
 		}
 		changed := finish
 		changed.Status = timeline.Failed
-		if _, _, err := timelinestore.MergeDocument("id", doc, timelinestore.Update{Operation: &changed}); !errors.Is(err, timelinestore.ErrConflict) {
+		if _, _, err := timelinestore.MergeDocument("id", doc, timelinestore.Update{Operation: &changed}); err != nil {
 			t.Fatal(err)
 		}
 	}

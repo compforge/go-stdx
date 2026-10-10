@@ -46,7 +46,7 @@ func TestIndependentProcessesContributeStages(t *testing.T) {
 	if path := os.Getenv("TIMELINE_TEST_DB"); path != "" {
 		db := open(t, path)
 		id := os.Getenv("TIMELINE_TEST_ACTOR")
-		tl, err := timeline.New("sandbox-1", timeline.WithStore(sqlstore.New(db)),
+		tl, err := timeline.New("sandbox-1", timeline.WithActor(timeline.Actor{Name: "test"}), timeline.WithStore(sqlstore.New(db)),
 			timeline.WithActor(timeline.Actor{ID: id, Name: "pod-" + id}))
 		if err != nil {
 			t.Fatal(err)
@@ -77,7 +77,7 @@ func TestIndependentProcessesContributeStages(t *testing.T) {
 	db := open(t, path)
 	schema(t, db)
 	store := sqlstore.New(db)
-	owner, _ := timeline.New("sandbox-1", timeline.WithStore(store), timeline.WithActor(timeline.Actor{ID: "api"}))
+	owner, _ := timeline.New("sandbox-1", timeline.WithActor(timeline.Actor{Name: "test"}), timeline.WithStore(store), timeline.WithActor(timeline.Actor{ID: "api"}))
 	if err := owner.Start(ctx, "sandbox_start"); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestIndependentProcessesContributeStages(t *testing.T) {
 		t.Fatalf("actors: %v", actors)
 	}
 	// Reopen through a new pool: no local registry or recorder state survives.
-	reader, _ := timeline.New("sandbox-1", timeline.WithStore(sqlstore.New(open(t, path))))
+	reader, _ := timeline.New("sandbox-1", timeline.WithActor(timeline.Actor{Name: "test"}), timeline.WithStore(sqlstore.New(open(t, path))))
 	restored, err := reader.Snapshot(ctx)
 	if err != nil || restored.FinishedAt != snapshot.FinishedAt || len(restored.Stages) != len(snapshot.Stages) {
 		t.Fatalf("reopen: %+v %v", restored, err)
@@ -162,7 +162,7 @@ func TestIndependentProcessesContributeStages(t *testing.T) {
 	}
 }
 
-func TestSQLIdempotencyConflictAndIsolation(t *testing.T) {
+func TestSQLIdempotencyOverwriteAndIsolation(t *testing.T) {
 	ctx := context.Background()
 	db := open(t, filepath.Join(t.TempDir(), "documents.db"))
 	schema(t, db)
@@ -183,14 +183,14 @@ func TestSQLIdempotencyConflictAndIsolation(t *testing.T) {
 		t.Fatalf("duplicate advanced version: %d %v", version, err)
 	}
 	operation.Operation = "other"
-	if err := store.Merge(ctx, "a", update); !errors.Is(err, timelinestore.ErrConflict) {
+	if err := store.Merge(ctx, "a", update); err != nil {
 		t.Fatalf("conflict: %v", err)
 	}
 	if err := store.Merge(ctx, "b", update); err != nil {
 		t.Fatal(err)
 	}
 	got, err := store.Read(ctx, "a")
-	if err != nil || got.Operation != "start" {
+	if err != nil || got.Operation != "other" {
 		t.Fatalf("overwrite: %+v %v", got, err)
 	}
 	canceled, cancel := context.WithCancel(ctx)
@@ -208,7 +208,7 @@ func TestSQLIdempotencyConflictAndIsolation(t *testing.T) {
 func TestProcessesRecordCompletedStages(t *testing.T) {
 	at := time.Date(2026, 9, 28, 1, 0, 0, 0, time.UTC)
 	if path := os.Getenv("TIMELINE_RECORD_DB"); path != "" {
-		tl, err := timeline.New("record-operation", timeline.WithStore(sqlstore.New(open(t, path))))
+		tl, err := timeline.New("record-operation", timeline.WithActor(timeline.Actor{Name: "test"}), timeline.WithStore(sqlstore.New(open(t, path))))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -237,7 +237,7 @@ func TestProcessesRecordCompletedStages(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "record.db")
 	db := open(t, path)
 	schema(t, db)
-	owner, _ := timeline.New("record-operation", timeline.WithStore(sqlstore.New(db)))
+	owner, _ := timeline.New("record-operation", timeline.WithActor(timeline.Actor{Name: "test"}), timeline.WithStore(sqlstore.New(db)))
 	if err := owner.Start(ctx, "start"); err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func TestSQLActorReferencesArePayloadLocal(t *testing.T) {
 	db := open(t, filepath.Join(t.TempDir(), "actors.db"))
 	schema(t, db)
 	store := sqlstore.New(db)
-	tl, err := timeline.New("actors", timeline.WithStore(store))
+	tl, err := timeline.New("actors", timeline.WithActor(timeline.Actor{Name: "test"}), timeline.WithStore(store))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestSQLActorReferencesArePayloadLocal(t *testing.T) {
 	}
 	conflicting := later
 	conflicting.Actor = actorB
-	if err := tl.Record(conflicting); !errors.Is(err, timelinestore.ErrConflict) {
+	if err := tl.Record(conflicting); err != nil {
 		t.Fatalf("lost actor conflict: %v", err)
 	}
 	if err := tl.Flush(ctx); err != nil {

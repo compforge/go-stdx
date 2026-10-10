@@ -16,7 +16,7 @@ import (
 
 func TestSixEntryPointsAndOptionalBoundaries(t *testing.T) {
 	ctx := context.Background()
-	m := newManager(t, timelinestore.NewMemoryStore(), managed.Config{})
+	m := newManager(t, timelinestore.NewMemoryStore(), managed.Config{Actor: managed.Actor{Name: "test"}})
 	defaultManager(t, m)
 	if _, err := managed.Begin("task", "prepare"); err != nil {
 		t.Fatal(err)
@@ -25,17 +25,17 @@ func TestSixEntryPointsAndOptionalBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	if err := managed.Record("task", timeline.Stage{ID: "observed", Name: "pull", StartedAt: now, FinishedAt: now, Status: timeline.Succeeded}); err != nil {
+	if err := managed.Record("task", timeline.Stage{Actor: timeline.Actor{Name: "test"}, ID: "observed", Name: "pull", StartedAt: now, FinishedAt: now, Status: timeline.Succeeded}); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := managed.Read(ctx, "task")
+	snapshot, err := managed.Read(ctx, "task", false)
 	if err != nil || len(snapshot.Stages) != 2 || snapshot.Status != timeline.Unknown || !snapshot.StartedAt.IsZero() || !snapshot.FinishedAt.IsZero() {
 		t.Fatalf("implicit operation state: %+v %v", snapshot, err)
 	}
 	if err := managed.Finish("task", nil); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err = managed.Read(ctx, "task")
+	snapshot, err = managed.Read(ctx, "task", false)
 	if err != nil || snapshot.Status != timeline.Succeeded || !snapshot.StartedAt.IsZero() {
 		t.Fatalf("finish without start: %+v %v", snapshot, err)
 	}
@@ -55,24 +55,24 @@ func TestSixEntryPointsAndOptionalBoundaries(t *testing.T) {
 	if err := managed.End("task", "late", nil); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err = managed.Read(ctx, "task")
+	snapshot, err = managed.Read(ctx, "task", false)
 	if err != nil || snapshot.StartedAt.IsZero() || !snapshot.FinishedAt.Equal(end) || len(snapshot.Stages) != 3 || snapshot.Operation != "startup" {
 		t.Fatalf("late facts: %+v %v", snapshot, err)
 	}
 	if got := m.Stats(); got.CachedTimelines != 1 {
 		t.Fatalf("Finish changed cache lifetime: %+v", got)
 	}
-	if err := managed.Start("task", "different"); !errors.Is(err, timelinestore.ErrConflict) {
+	if err := managed.Start("task", "different"); err != nil {
 		t.Fatal(err)
 	}
-	if err := managed.Finish("task", errors.New("different")); !errors.Is(err, timelinestore.ErrConflict) {
+	if err := managed.Finish("task", errors.New("different")); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestNamedStageAmbiguityParentAndReuse(t *testing.T) {
 	ctx := context.Background()
-	m := newManager(t, timelinestore.NewMemoryStore(), managed.Config{})
+	m := newManager(t, timelinestore.NewMemoryStore(), managed.Config{Actor: managed.Actor{Name: "test"}})
 	first, err := m.Begin("task", "work")
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +111,7 @@ func TestNamedStageAmbiguityParentAndReuse(t *testing.T) {
 		t.Fatal(err)
 	}
 	third.End(nil)
-	snapshot, err := m.Read(ctx, "task")
+	snapshot, err := m.Read(ctx, "task", false)
 	if err != nil || len(snapshot.Stages) != 4 || len(snapshot.RunningStages()) != 0 {
 		t.Fatalf("snapshot: %+v %v", snapshot, err)
 	}
@@ -132,7 +132,7 @@ func TestCachedReadsDoNotWaitForPersistence(t *testing.T) {
 		}
 		return store.MemoryStore.Merge(ctx, id, u)
 	}
-	m := newManager(t, store, managed.Config{})
+	m := newManager(t, store, managed.Config{Actor: managed.Actor{Name: "test"}})
 	if err := m.Start("task", "startup"); err != nil {
 		t.Fatal(err)
 	}
@@ -140,21 +140,21 @@ func TestCachedReadsDoNotWaitForPersistence(t *testing.T) {
 	if err := m.Finish("task", failure); err != nil {
 		t.Fatal(err)
 	}
-	if snapshot, err := m.Read(context.Background(), "task"); err != nil || snapshot.Status != timeline.Failed {
+	if snapshot, err := m.Read(context.Background(), "task", false); err != nil || snapshot.Status != timeline.Failed {
 		t.Fatalf("cache read: %+v %v", snapshot, err)
 	}
 	if err := m.Flush(context.Background(), "task", true); !errors.Is(err, unavailable) {
 		t.Fatal(err)
 	}
 	available.Store(true)
-	snapshot, err := m.Read(context.Background(), "task")
+	snapshot, err := m.Read(context.Background(), "task", false)
 	if err != nil || snapshot.Status != timeline.Failed || snapshot.Error != failure.Error() {
 		t.Fatalf("retry: %+v %v", snapshot, err)
 	}
 	if err := m.Start("start-only", "running"); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err = m.Read(context.Background(), "start-only")
+	snapshot, err = m.Read(context.Background(), "start-only", false)
 	if err != nil || snapshot.Status != timeline.Unknown || !snapshot.FinishedAt.IsZero() {
 		t.Fatalf("invented outcome: %+v %v", snapshot, err)
 	}
@@ -163,7 +163,7 @@ func TestCachedReadsDoNotWaitForPersistence(t *testing.T) {
 func TestManagerResumesFactsPersistedByAnotherManager(t *testing.T) {
 	ctx := context.Background()
 	backend := timelinestore.NewMemoryStore()
-	first, second := newManager(t, backend, managed.Config{}), newManager(t, backend, managed.Config{})
+	first, second := newManager(t, backend, managed.Config{Actor: managed.Actor{Name: "test"}}), newManager(t, backend, managed.Config{Actor: managed.Actor{Name: "test"}})
 	if err := first.Start("task", "startup"); err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestManagerResumesFactsPersistedByAnotherManager(t *testing.T) {
 }
 
 func TestConcurrentNamedStagesAndIdempotentStart(t *testing.T) {
-	m := newManager(t, timelinestore.NewMemoryStore(), managed.Config{})
+	m := newManager(t, timelinestore.NewMemoryStore(), managed.Config{Actor: managed.Actor{Name: "test"}})
 	var wg sync.WaitGroup
 	for i := range 24 {
 		wg.Add(1)
@@ -213,7 +213,7 @@ func TestConcurrentNamedStagesAndIdempotentStart(t *testing.T) {
 	if err := m.Finish("task", nil); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := m.Read(context.Background(), "task")
+	snapshot, err := m.Read(context.Background(), "task", false)
 	if err != nil || len(snapshot.Stages) != 24 || len(snapshot.RunningStages()) != 0 {
 		t.Fatalf("parallel: %+v %v", snapshot, err)
 	}
@@ -236,7 +236,7 @@ func TestReadDoesNotVisitOtherIDs(t *testing.T) {
 		}
 		return store.MemoryStore.Merge(ctx, id, u)
 	}
-	m := newManager(t, store, managed.Config{ExportTimeout: time.Second})
+	m := newManager(t, store, managed.Config{Actor: managed.Actor{Name: "test"}, ExportTimeout: time.Second})
 	if _, err := m.Begin("blocked", "wait"); err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestReadDoesNotVisitOtherIDs(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	snapshot, err := m.Read(ctx, "selected")
+	snapshot, err := m.Read(ctx, "selected", false)
 	if err != nil || len(snapshot.Stages) != 1 || snapshot.Stages[0].Status != timeline.Succeeded || calls.Load() != 1 {
 		t.Fatalf("ID isolation: %+v %v", snapshot, err)
 	}

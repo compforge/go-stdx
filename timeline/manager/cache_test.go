@@ -16,7 +16,7 @@ import (
 func TestPersistedStageHandleSurvivesEviction(t *testing.T) {
 	ctx := context.Background()
 	backend := timelinestore.NewMemoryStore()
-	m := newManager(t, backend, managed.Config{})
+	m := newManager(t, backend, managed.Config{Actor: managed.Actor{Name: "test"}})
 	stage, err := m.Begin("task", "work", timeline.WithAttributes(timeline.Attribute{Key: "attempt", Value: 1}))
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +47,7 @@ func TestPersistedStageHandleSurvivesEviction(t *testing.T) {
 	if err = stage.End(errors.New("ignored repeat")); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := m.Read(ctx, "task")
+	snapshot, err := m.Read(ctx, "task", false)
 	if err != nil || snapshot.Stages[0].Status != timeline.Succeeded {
 		t.Fatalf("repeat: %+v %v", snapshot, err)
 	}
@@ -56,7 +56,7 @@ func TestPersistedStageHandleSurvivesEviction(t *testing.T) {
 func TestBoundariesAndNamedStageRestoreAfterCapacityEviction(t *testing.T) {
 	ctx := context.Background()
 	backend := timelinestore.NewMemoryStore()
-	m := newManager(t, backend, managed.Config{MaxTimelines: 1})
+	m := newManager(t, backend, managed.Config{Actor: managed.Actor{Name: "test"}, MaxTimelines: 1})
 	if err := m.Start("task", "operation"); err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestBoundariesAndNamedStageRestoreAfterCapacityEviction(t *testing.T) {
 	if err := m.End("task", "work", nil); err != nil {
 		t.Fatal(err)
 	}
-	after, err := m.Read(ctx, "task")
+	after, err := m.Read(ctx, "task", false)
 	if err != nil || !after.StartedAt.Equal(before.StartedAt) || !after.FinishedAt.Equal(before.FinishedAt) || len(after.Stages) != 1 || after.Stages[0].ID != before.Stages[0].ID || after.Stages[0].Status != timeline.Succeeded {
 		t.Fatalf("restore: %+v %v", after, err)
 	}
@@ -92,7 +92,7 @@ func TestBoundariesAndNamedStageRestoreAfterCapacityEviction(t *testing.T) {
 }
 
 func TestFinishDoesNotEvictOrEndStages(t *testing.T) {
-	m := newManager(t, timelinestore.NewMemoryStore(), managed.Config{MaxTimelines: 1})
+	m := newManager(t, timelinestore.NewMemoryStore(), managed.Config{Actor: managed.Actor{Name: "test"}, MaxTimelines: 1})
 	if _, err := m.Begin("task", "running"); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestFinishDoesNotEvictOrEndStages(t *testing.T) {
 
 func TestEvictionAttemptsFinalSaveAndRestores(t *testing.T) {
 	backend := timelinestore.NewMemoryStore()
-	m := newManager(t, backend, managed.Config{FlushInterval: time.Hour})
+	m := newManager(t, backend, managed.Config{Actor: managed.Actor{Name: "test"}, FlushInterval: time.Hour})
 	stage, err := m.Begin("task", "work")
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +139,7 @@ func TestFailedEvictionReleasesPendingMemory(t *testing.T) {
 	failure := errors.New("offline")
 	backend.merge = func(context.Context, string, timelinestore.Update) error { return failure }
 	var reports atomic.Int32
-	m := newManager(t, backend, managed.Config{FlushInterval: time.Hour, OnError: func(string, error) { reports.Add(1) }})
+	m := newManager(t, backend, managed.Config{Actor: managed.Actor{Name: "test"}, FlushInterval: time.Hour, OnError: func(string, error) { reports.Add(1) }})
 	stage, err := m.Begin("task", "work")
 	if err != nil {
 		t.Fatal(err)
@@ -162,7 +162,7 @@ func TestPermanentSaveConflictRetiresAndIsReported(t *testing.T) {
 		}
 		return backend.MemoryStore.Merge(ctx, id, u)
 	}
-	m := newManager(t, backend, managed.Config{MaxPendingTimelines: 1, FlushInterval: time.Hour})
+	m := newManager(t, backend, managed.Config{Actor: managed.Actor{Name: "test"}, MaxPendingTimelines: 1, FlushInterval: time.Hour})
 	if _, err := m.Begin("conflict", "work"); err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestPermanentSaveConflictRetiresAndIsReported(t *testing.T) {
 	if got := m.Stats(); got.PendingTimelines != 0 || got.RejectedUpdates != 1 {
 		t.Fatalf("conflict retained: %+v", got)
 	}
-	s, err := m.Read(context.Background(), "conflict")
+	s, err := m.Read(context.Background(), "conflict", false)
 	if err != nil || s.Collection.LocalFlushed {
 		t.Fatalf("lost save reported healthy: %+v %v", s, err)
 	}
@@ -197,7 +197,7 @@ func TestLRUEvictionDoesNotWaitForStore(t *testing.T) {
 			return ctx.Err()
 		}
 	}
-	m := newManager(t, backend, managed.Config{MaxTimelines: 1, ExportTimeout: time.Second})
+	m := newManager(t, backend, managed.Config{Actor: managed.Actor{Name: "test"}, MaxTimelines: 1, ExportTimeout: time.Second})
 	defer close(release)
 	if _, err := m.Begin("task", "work"); err != nil {
 		t.Fatal(err)
@@ -209,7 +209,7 @@ func TestLRUEvictionDoesNotWaitForStore(t *testing.T) {
 	if got := m.Stats(); got.CachedTimelines != 1 || got.PendingTimelines != 2 {
 		t.Fatalf("LRU did not release the cached copy while saving: %+v", got)
 	}
-	snapshot, err := m.Read(context.Background(), "replacement")
+	snapshot, err := m.Read(context.Background(), "replacement", false)
 	if err != nil || snapshot.Collection.StoreRead || len(snapshot.Stages) != 1 {
 		t.Fatalf("replacement not cached: %+v %v", snapshot, err)
 	}

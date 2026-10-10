@@ -22,7 +22,7 @@ import (
 func TestManagersPersistAcrossProcesses(t *testing.T) {
 	if path := os.Getenv("TIMELINE_MANAGER_TEST_DB"); path != "" {
 		store := sqlstore.New(open(t, path))
-		m, err := managed.New(store, managed.Config{FlushInterval: 5 * time.Millisecond})
+		m, err := managed.New(store, managed.Config{Actor: managed.Actor{Name: "test"}, FlushInterval: 5 * time.Millisecond})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -38,14 +38,14 @@ func TestManagersPersistAcrossProcesses(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		s := r.Begin("initialize")
+		s := r.Begin("initialize", timeline.WithStageID("shared-stage"))
 		s.End(nil)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		for ctx.Err() == nil {
 			d, _ := store.Read(ctx, "shared")
 			for _, stage := range d.Stages {
-				if stage.ID == s.ID() && stage.Status == timeline.Succeeded {
+				if stage.ID == s.ID() && stage.Actor.ID == actor && stage.Status == timeline.Succeeded {
 					return
 				}
 			}

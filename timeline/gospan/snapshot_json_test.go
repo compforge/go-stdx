@@ -19,8 +19,8 @@ func TestSnapshotJSONRoundTripAndOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	input["names"].([]string)[0] = "after"
-	parentCtx, parent := timeline.BeginWithContext(ctx, tl, "parent")
-	_, child := timeline.BeginWithContext(parentCtx, tl, "child", timeline.WithParent(parent.ID()), timeline.WithAttributes(timeline.Attribute{Key: "count", Value: 9007199254740993}))
+	parentCtx, parent := timeline.BeginWithContext(ctx, tl, "parent", timeline.WithStageActor(timeline.Actor{Name: "test"}))
+	_, child := timeline.BeginWithContext(parentCtx, tl, "child", timeline.WithParent(parent.ID()), timeline.WithStageActor(timeline.Actor{Name: "test"}), timeline.WithAttributes(timeline.Attribute{Key: "count", Value: 9007199254740993}))
 	progress, err := tl.Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -93,9 +93,9 @@ func TestInvalidAttributesReportCollectionFailureAndStillFinish(t *testing.T) {
 			invalid := timeline.Attribute{Key: "nan", Value: math.NaN()}
 			var stage timeline.StageHandle
 			if call == "begin" {
-				_, stage = timeline.BeginWithContext(ctx, tl, "child", timeline.WithAttributes(invalid))
+				_, stage = timeline.BeginWithContext(ctx, tl, "child", timeline.WithStageActor(timeline.Actor{Name: "test"}), timeline.WithAttributes(invalid))
 			} else {
-				_, stage = timeline.BeginWithContext(ctx, tl, "child")
+				_, stage = timeline.BeginWithContext(ctx, tl, "child", timeline.WithStageActor(timeline.Actor{Name: "test"}))
 			}
 			if call == "set" {
 				tl.SetAttributes(invalid)

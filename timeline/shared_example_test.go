@@ -12,11 +12,11 @@ func ExampleNew() {
 	ctx := context.Background()
 	// A persistent Store can connect these handles across process boundaries.
 	store := timelinestore.NewMemoryStore()
-	owner, _ := timeline.New("sandbox-42", timeline.WithStore(store))
+	owner, _ := timeline.New("sandbox-42", timeline.WithActor(timeline.Actor{Name: "test"}), timeline.WithStore(store))
 	if err := owner.Start(ctx, "sandbox_start"); err != nil {
 		panic(err)
 	}
-	worker, _ := timeline.New("sandbox-42", timeline.WithStore(store),
+	worker, _ := timeline.New("sandbox-42", timeline.WithActor(timeline.Actor{Name: "test"}), timeline.WithStore(store),
 		timeline.WithActor(timeline.Actor{Name: "scheduler-pod"}))
 	_, stage := timeline.BeginWithContext(ctx, worker, "acquire_carrier")
 	stage.End(nil)

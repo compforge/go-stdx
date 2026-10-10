@@ -77,10 +77,7 @@ func (t *recorder) RecordStart(operation string, attributes ...Attribute) error 
 	if err != nil {
 		return t.recordError(err)
 	}
-	if t.started {
-		if t.operation.Operation != operation || !model.SameJSON(t.operation.Attributes, values) {
-			return store.ErrConflict
-		}
+	if t.started && t.operation.Operation == operation && model.SameJSON(t.operation.Attributes, values) {
 		return nil
 	}
 	next := t.operation
@@ -91,7 +88,9 @@ func (t *recorder) RecordStart(operation string, attributes ...Attribute) error 
 	if !t.finished {
 		next.Status = Unknown
 	}
-	if err := t.enqueueOperation(next); err != nil {
+	startUpdate := next
+	startUpdate.FinishedAt, startUpdate.Status, startUpdate.Error = time.Time{}, Unknown, ""
+	if err := t.enqueueOperation(startUpdate); err != nil {
 		return err
 	}
 	t.operation, t.started = next, true
@@ -139,7 +138,7 @@ func (t *recorder) Begin(name string, opts ...StageOption) StageHandle {
 			return noopStage{}
 		}
 	}
-	if data.Name == "" || data.ID == "" || data.ID == data.ParentID || data.ID == model.RootID(t.id) || data.StartedAt.IsZero() {
+	if data.Actor.Key() == "" || data.Name == "" || data.ID == "" || data.ID == data.ParentID || data.ID == model.RootID(t.id) || data.StartedAt.IsZero() {
 		t.recordError(ErrInvalidStage)
 		return noopStage{}
 	}
@@ -175,7 +174,9 @@ func (t *recorder) UpdateAttributes(attributes ...Attribute) error {
 	next := t.operation
 	next.Attributes = mergeAttributes(model.CloneJSONAttributes(next.Attributes), values)
 	next.Revision++
-	if err := t.enqueueOperation(next); err != nil {
+	startUpdate := next
+	startUpdate.FinishedAt, startUpdate.Status, startUpdate.Error = time.Time{}, Unknown, ""
+	if err := t.enqueueOperation(startUpdate); err != nil {
 		return err
 	}
 	t.operation = next
@@ -229,7 +230,7 @@ func (s *recordedStage) End(stageErr error, opts ...EndOption) error {
 				return s.owner.recordError(err)
 			}
 		}
-		if next.FinishedAt.IsZero() || next.FinishedAt.Before(next.StartedAt) {
+		if next.Actor.Key() != s.record.Actor.Key() || next.FinishedAt.IsZero() || next.FinishedAt.Before(next.StartedAt) {
 			return s.owner.recordError(ErrInvalidStage)
 		}
 		if !s.started.IsZero() && next.FinishedAt.Equal(now) {
@@ -324,10 +325,10 @@ func (t *recorder) RecordFinish(operationErr error) error {
 	defer t.mu.Unlock()
 	status, message := result(operationErr)
 	if t.finished {
-		if t.operation.Status != status || t.operation.Error != message {
-			return store.ErrConflict
+		if t.operation.Status == status && t.operation.Error == message {
+			return nil
 		}
-		return nil
+		t.terminal = nil
 	}
 	if t.terminal == nil {
 		next := t.operation
@@ -341,7 +342,9 @@ func (t *recorder) RecordFinish(operationErr error) error {
 	// A start/attribute update may have been accepted while the finish was pending.
 	next.StartedAt, next.Operation, next.Attributes = t.operation.StartedAt, t.operation.Operation, t.operation.Attributes
 	next.Revision = t.operation.Revision + 1
-	if err := t.enqueueOperation(next); err != nil {
+	finishUpdate := next
+	finishUpdate.StartedAt, finishUpdate.Operation, finishUpdate.Attributes = time.Time{}, "", nil
+	if err := t.enqueueOperation(finishUpdate); err != nil {
 		return err
 	}
 	t.operation, t.finished = next, true

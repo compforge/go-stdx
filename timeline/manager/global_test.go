@@ -21,13 +21,13 @@ func defaultManager(t *testing.T, m *managed.Manager) {
 func TestGlobalRequiresExplicitSetup(t *testing.T) {
 	defaultManager(t, nil)
 	_, beginErr := managed.Begin("task", "work")
-	_, readErr := managed.Read(context.Background(), "task")
+	_, readErr := managed.Read(context.Background(), "task", false)
 	for _, err := range []error{beginErr, readErr, managed.Start("task", "startup"), managed.Finish("task", nil), managed.Record("task", timeline.Stage{}), managed.End("task", "work", nil)} {
 		if !errors.Is(err, managed.ErrNoDefault) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := timeline.New("standalone"); err != nil {
+	if _, err := timeline.New("standalone", timeline.WithActor(timeline.Actor{Name: "test"})); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := managed.Begin("task", "work"); !errors.Is(err, managed.ErrNoDefault) {
@@ -37,8 +37,8 @@ func TestGlobalRequiresExplicitSetup(t *testing.T) {
 
 func TestDefaultReplacementKeepsExistingWritersBound(t *testing.T) {
 	ctx := context.Background()
-	first := newManager(t, timelinestore.NewMemoryStore(), managed.Config{})
-	second := newManager(t, timelinestore.NewMemoryStore(), managed.Config{})
+	first := newManager(t, timelinestore.NewMemoryStore(), managed.Config{Actor: managed.Actor{Name: "test"}})
+	second := newManager(t, timelinestore.NewMemoryStore(), managed.Config{Actor: managed.Actor{Name: "test"}})
 	defaultManager(t, first)
 	before, err := managed.Begin("same-id", "first")
 	if err != nil {
@@ -58,26 +58,26 @@ func TestDefaultReplacementKeepsExistingWritersBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	for m, name := range map[*managed.Manager]string{first: "first", second: "second"} {
-		snapshot, err := m.Read(ctx, "same-id")
+		snapshot, err := m.Read(ctx, "same-id", false)
 		if err != nil || len(snapshot.Stages) != 1 || snapshot.Stages[0].Name != name {
 			t.Fatalf("writer rebound: %+v %v", snapshot, err)
 		}
 	}
-	current, err := managed.Read(ctx, "same-id")
+	current, err := managed.Read(ctx, "same-id", false)
 	if err != nil || current.Stages[0].Name != "second" {
 		t.Fatalf("wrong default: %+v %v", current, err)
 	}
-	standalone, _ := timeline.New("same-id")
+	standalone, _ := timeline.New("same-id", timeline.WithActor(timeline.Actor{Name: "test"}))
 	standalone.Begin("standalone").End(nil)
-	current, _ = managed.Read(ctx, "same-id")
+	current, _ = managed.Read(ctx, "same-id", false)
 	if len(current.Stages) != 1 {
 		t.Fatal("standalone used default")
 	}
 }
 
 func TestConcurrentDefaultSelection(t *testing.T) {
-	first := newManager(t, timelinestore.NewMemoryStore(), managed.Config{})
-	second := newManager(t, timelinestore.NewMemoryStore(), managed.Config{})
+	first := newManager(t, timelinestore.NewMemoryStore(), managed.Config{Actor: managed.Actor{Name: "test"}})
+	second := newManager(t, timelinestore.NewMemoryStore(), managed.Config{Actor: managed.Actor{Name: "test"}})
 	defaultManager(t, first)
 	var wg sync.WaitGroup
 	for i := range 40 {
@@ -103,7 +103,7 @@ func TestConcurrentDefaultSelection(t *testing.T) {
 	for i := range 40 {
 		found := 0
 		for _, m := range []*managed.Manager{first, second} {
-			snapshot, err := m.Read(context.Background(), fmt.Sprint(i))
+			snapshot, err := m.Read(context.Background(), fmt.Sprint(i), false)
 			if err == nil && len(snapshot.Stages) == 1 && snapshot.Stages[0].Status == timeline.Succeeded {
 				found++
 			}

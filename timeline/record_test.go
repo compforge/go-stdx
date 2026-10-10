@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -18,7 +17,7 @@ import (
 
 func completedStage() timeline.Stage {
 	at := time.Date(2026, 9, 28, 1, 0, 0, 0, time.UTC)
-	return timeline.Stage{ID: "external:pull:1", Name: "image_pull", StartedAt: at, FinishedAt: at.Add(3 * time.Second), Status: timeline.Succeeded, Attributes: map[string]json.RawMessage{"container": json.RawMessage(`"sandbox"`)}}
+	return timeline.Stage{Actor: timeline.Actor{Name: "test"}, ID: "external:pull:1", Name: "image_pull", StartedAt: at, FinishedAt: at.Add(3 * time.Second), Status: timeline.Succeeded, Attributes: map[string]json.RawMessage{"container": json.RawMessage(`"sandbox"`)}}
 }
 
 func recordingBackends(t *testing.T, test func(*testing.T, timeline.Timeline)) {
@@ -27,7 +26,7 @@ func recordingBackends(t *testing.T, test func(*testing.T, timeline.Timeline)) {
 		t.Run(backend, func(t *testing.T) {
 			var tl timeline.Timeline
 			if backend == "shared" {
-				shared, err := timeline.New(t.Name())
+				shared, err := timeline.New(t.Name(), timeline.WithActor(timeline.Actor{Name: "test"}))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -41,6 +40,9 @@ func recordingBackends(t *testing.T, test func(*testing.T, timeline.Timeline)) {
 				if err != nil {
 					t.Fatal(err)
 				}
+			}
+			if backend == "gospan" {
+				tl = actorTimeline{tl}
 			}
 			t.Cleanup(func() { _, _ = tl.Finish(context.Background(), nil) })
 			test(t, tl)
@@ -78,7 +80,7 @@ func TestRecordCompletedDataAndLateReplay(t *testing.T) {
 			t.Fatalf("late record changed operation: %+v", got)
 		}
 		stage := got.Stages[0]
-		if stage.Name != original.Name || string(stage.Attributes["container"]) != `"sandbox"` || stage.Duration(got.CapturedAt) != 3*time.Second || stage.ParentID != "" || stage.Actor != (timeline.Actor{}) {
+		if stage.Name != original.Name || string(stage.Attributes["container"]) != `"sandbox"` || stage.Duration(got.CapturedAt) != 3*time.Second || stage.ParentID != "" || stage.Actor != original.Actor {
 			t.Fatalf("bad imported stage: %+v", stage)
 		}
 		raw, err := json.Marshal(got)
@@ -134,7 +136,7 @@ func TestRecordRejectsIncompleteOrInvalidData(t *testing.T) {
 	})
 }
 
-func TestRecordConflictsAreNotCoalescedAway(t *testing.T) {
+func TestRecordReplacesSameActorStateBeforeAndAfterFlush(t *testing.T) {
 	for _, flushFirst := range []bool{false, true} {
 		t.Run(fmt.Sprint(flushFirst), func(t *testing.T) {
 			recordingBackends(t, func(t *testing.T, tl timeline.Timeline) {
@@ -149,11 +151,11 @@ func TestRecordConflictsAreNotCoalescedAway(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if err := tl.Record(b); !errors.Is(err, timelinestore.ErrConflict) {
+				if err := tl.Record(b); err != nil {
 					t.Fatalf("conflict silently accepted: %v", err)
 				}
 				snapshot, err := tl.Snapshot(ctx)
-				if err != nil || len(snapshot.Stages) != 1 || !snapshot.Stages[0].FinishedAt.Equal(a.FinishedAt) {
+				if err != nil || len(snapshot.Stages) != 1 || !snapshot.Stages[0].FinishedAt.Equal(b.FinishedAt) {
 					t.Fatalf("rejected import changed facts: %+v %v", snapshot, err)
 				}
 			})
@@ -189,7 +191,7 @@ func TestConcurrentRecordHandlesDeduplicateAndRetainEveryStage(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			tl, _ := timeline.New("operation", timeline.WithStore(store))
+			tl, _ := timeline.New("operation", timeline.WithActor(timeline.Actor{Name: "test"}), timeline.WithStore(store))
 			for j := 0; j < 2; j++ {
 				if err := tl.Record(completedStage()); err != nil {
 					t.Error(err)
@@ -215,25 +217,31 @@ func TestConcurrentRecordHandlesDeduplicateAndRetainEveryStage(t *testing.T) {
 func TestRecordCompletesKnownStartWithoutCallerRevision(t *testing.T) {
 	ctx := context.Background()
 	store := timelinestore.NewMemoryStore()
-	a, _ := timeline.New("id", timeline.WithStore(store))
+	a, _ := timeline.New("id", timeline.WithActor(timeline.Actor{Name: "test"}), timeline.WithStore(store))
 	data := completedStage()
 	a.Begin(data.Name, timeline.WithStageID(data.ID), timeline.WithStartTime(data.StartedAt))
 	if err := a.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
 	pending, _ := store.Read(ctx, "id")
-	b, _ := timeline.New("id", timeline.WithStore(store))
+	b, _ := timeline.New("id", timeline.WithActor(timeline.Actor{Name: "test"}), timeline.WithStore(store))
 	if err := b.Record(data); err != nil {
 		t.Fatal(err)
 	}
 	if err := b.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// A delayed start cannot reopen the imported completion.
+	// Same actor writers are best effort: a later accepted start may reopen it.
 	if err := store.Merge(ctx, "id", timelinestore.Update{Stages: pending.Stages}); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := store.Read(ctx, "id")
+	if before.Stages[0].Status != timeline.Running {
+		t.Fatal(before)
+	}
+	if _, err := b.Snapshot(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if err := b.Record(data); err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +249,7 @@ func TestRecordCompletesKnownStartWithoutCallerRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	after, _ := store.Read(ctx, "id")
-	if !reflect.DeepEqual(before, after) || after.Stages[0].Status != timeline.Succeeded {
+	if after.Stages[0].Status != timeline.Succeeded {
 		t.Fatal("replay modified terminal interval")
 	}
 }
@@ -329,4 +337,12 @@ func TestContextDoesNotAssignParent(t *testing.T) {
 			}
 		}
 	})
+}
+
+// The native adapter accepts actors at each Begin; keep the common backend
+// fixtures attributed without changing explicit actor options.
+type actorTimeline struct{ timeline.Timeline }
+
+func (t actorTimeline) Begin(name string, opts ...timeline.StageOption) timeline.StageHandle {
+	return t.Timeline.Begin(name, append([]timeline.StageOption{timeline.WithStageActor(timeline.Actor{Name: "test"})}, opts...)...)
 }

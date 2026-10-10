@@ -53,7 +53,7 @@ func TestFinalAttributesAndResultAreAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	tl.SetAttributes(timeline.Attribute{Key: "runtime", Value: "pod"})
-	_, stage := timeline.BeginWithContext(ctx, tl, "work")
+	_, stage := timeline.BeginWithContext(ctx, tl, "work", timeline.WithStageActor(timeline.Actor{Name: "test"}))
 	var wg sync.WaitGroup
 	for _, value := range []string{"a", "b"} {
 		wg.Add(1)
@@ -85,7 +85,7 @@ func TestFinalAttributesAndResultAreAtomic(t *testing.T) {
 func TestNoopRetainsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	got, stage := timeline.BeginWithContext(ctx, timeline.Noop("disabled-operation"), "disabled")
+	got, stage := timeline.BeginWithContext(ctx, timeline.Noop("disabled-operation"), "disabled", timeline.WithStageActor(timeline.Actor{Name: "test"}))
 	if got != ctx || got.Err() != context.Canceled {
 		t.Fatal("changed context")
 	}

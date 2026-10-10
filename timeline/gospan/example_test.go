@@ -16,8 +16,8 @@ func ExampleNew() {
 	if err != nil {
 		panic(err)
 	}
-	prepareCtx, prepare := timeline.BeginWithContext(ctx, tl, "prepare")
-	_, workspace := timeline.BeginWithContext(prepareCtx, tl, "resolve_workspace", timeline.WithParent(prepare.ID()))
+	prepareCtx, prepare := timeline.BeginWithContext(ctx, tl, "prepare", timeline.WithStageActor(timeline.Actor{Name: "test"}))
+	_, workspace := timeline.BeginWithContext(prepareCtx, tl, "resolve_workspace", timeline.WithParent(prepare.ID()), timeline.WithStageActor(timeline.Actor{Name: "test"}))
 	workspace.End(nil)
 	prepare.End(nil)
 

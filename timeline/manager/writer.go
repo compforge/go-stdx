@@ -21,5 +21,5 @@ func (w *cachedWriter) Flush(ctx context.Context) error {
 	return w.cache.Flush(ctx, w.id, true)
 }
 func (w *cachedWriter) ReadSnapshot(ctx context.Context) (Snapshot, error) {
-	return w.cache.ReadFresh(ctx, w.id)
+	return w.cache.Read(ctx, w.id, true)
 }

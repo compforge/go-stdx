@@ -20,6 +20,7 @@ func WithStageID(id StageID) StageOption { return manager.WithStageID(id) }
 func WithParent(id StageID) StageOption      { return manager.WithParent(id) }
 func WithStartTime(at time.Time) StageOption { return manager.WithStartTime(at) }
 func WithStageActor(actor Actor) StageOption { return manager.WithStageActor(actor) }
+func WithEndActor(actor Actor) EndOption     { return manager.WithEndActor(actor) }
 func WithEndTime(at time.Time) EndOption     { return manager.WithEndTime(at) }
 func WithAttributes(attributes ...Attribute) StageOption {
 	return manager.WithAttributes(attributes...)

@@ -62,7 +62,7 @@ func TestRegistryConcurrentCreateAndParallelRecording(t *testing.T) {
 	if got, ok := timeline.FromContext(ctx); !ok || got != owner {
 		t.Fatal("optional context binding lost registry handle")
 	}
-	_, parent := timeline.BeginWithContext(ctx, owner, "owner_work")
+	_, parent := timeline.BeginWithContext(ctx, owner, "owner_work", timeline.WithStageActor(timeline.Actor{Name: "test"}))
 	if _, err := owner.Finish(ctx, nil); !errors.Is(err, timeline.ErrActiveStages) {
 		t.Fatalf("early finish: %v", err)
 	}
@@ -75,11 +75,11 @@ func TestRegistryConcurrentCreateAndParallelRecording(t *testing.T) {
 				t.Error("lookup returned a different or missing instance")
 				return
 			}
-			childCtx, stage := timeline.BeginWithContext(ctx, tl, fmt.Sprintf("component-%d", i))
+			childCtx, stage := timeline.BeginWithContext(ctx, tl, fmt.Sprintf("component-%d", i), timeline.WithStageActor(timeline.Actor{Name: "test"}))
 			if got, ok := timeline.FromContext(childCtx); !ok || got != owner {
 				t.Error("Begin replaced registry context handle")
 			}
-			_, child := timeline.BeginWithContext(childCtx, tl, "child", timeline.WithParent(stage.ID()))
+			_, child := timeline.BeginWithContext(childCtx, tl, "child", timeline.WithParent(stage.ID()), timeline.WithStageActor(timeline.Actor{Name: "test"}))
 			child.End(nil)
 			stage.End(nil)
 		}()
@@ -204,7 +204,7 @@ func TestRegistryLookupBeginAndFinishRace(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				if found, ok := r.Lookup(id); ok {
-					_, stage := timeline.BeginWithContext(context.Background(), found, "worker")
+					_, stage := timeline.BeginWithContext(context.Background(), found, "worker", timeline.WithStageActor(timeline.Actor{Name: "test"}))
 					stage.End(nil)
 				}
 			}()

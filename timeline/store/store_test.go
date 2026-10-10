@@ -9,18 +9,18 @@ import (
 	timelinestore "github.com/compforge/go-stdx/timeline/store"
 )
 
-func TestDocumentMergeConflictIsAtomicAndTerminalImmutable(t *testing.T) {
+func TestDocumentInvalidMergeIsAtomicAndTerminalCanBeReplaced(t *testing.T) {
 	at := time.Now().UTC()
-	stage := timelinestore.StageUpdate{Revision: 1, Stage: timeline.Stage{ID: "s", Name: "work", StartedAt: at, Status: timeline.Running}}
+	stage := timelinestore.StageUpdate{Revision: 1, Stage: timeline.Stage{Actor: timeline.Actor{Name: "test"}, ID: "s", Name: "work", StartedAt: at, Status: timeline.Running}}
 	doc, _, err := timelinestore.MergeDocument("id", timelinestore.Document{}, timelinestore.Update{Stages: []timelinestore.StageUpdate{stage}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	changed := stage
-	changed.Name = "wrong"
+	changed.Actor = timeline.Actor{}
 	another := stage
 	another.ID = "another"
-	if _, _, err := timelinestore.MergeDocument("id", doc, timelinestore.Update{Stages: []timelinestore.StageUpdate{another, changed}}); !errors.Is(err, timelinestore.ErrConflict) {
+	if _, _, err := timelinestore.MergeDocument("id", doc, timelinestore.Update{Stages: []timelinestore.StageUpdate{another, changed}}); !errors.Is(err, timeline.ErrInvalidStage) {
 		t.Fatal(err)
 	}
 	if len(doc.Stages) != 1 || doc.Stages[0].Name != "work" {
@@ -32,7 +32,7 @@ func TestDocumentMergeConflictIsAtomicAndTerminalImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	stage.Revision, stage.Status, stage.FinishedAt = 3, timeline.Running, time.Time{}
-	if _, _, err := timelinestore.MergeDocument("id", doc, timelinestore.Update{Stages: []timelinestore.StageUpdate{stage}}); !errors.Is(err, timelinestore.ErrConflict) {
+	if _, _, err := timelinestore.MergeDocument("id", doc, timelinestore.Update{Stages: []timelinestore.StageUpdate{stage}}); err != nil {
 		t.Fatalf("reopened terminal: %v", err)
 	}
 }

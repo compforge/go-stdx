@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"github.com/compforge/go-stdx/timeline/model"
 	"github.com/compforge/go-stdx/timeline/store"
 )
 
@@ -10,6 +11,7 @@ type stageHandle struct {
 	manager    *Manager
 	timelineID string
 	id         StageID
+	actor      string
 }
 
 func (s *stageHandle) ID() StageID { return s.id }
@@ -18,24 +20,38 @@ func (s *stageHandle) ID() StageID { return s.id }
 // their handles to disambiguate completion.
 func (m *Manager) Begin(id, name string, options ...StageOption) (StageHandle, error) {
 	var stageID StageID
+	var actor string
 	err := m.apply(id, func(r *recorder, _ store.Document) error {
-		stageID = r.Begin(name, options...).ID()
+		handle := r.Begin(name, options...)
+		stageID = handle.ID()
+		if stage, ok := handle.(*recordedStage); ok {
+			actor = stage.record.Actor.Key()
+		}
 		return r.Err()
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &stageHandle{manager: m, timelineID: id, id: stageID}, nil
+	return &stageHandle{manager: m, timelineID: id, id: stageID, actor: actor}, nil
 }
 
 // End completes the uniquely named running stage, restoring it on a cache miss.
 // A rejected admission leaves it running and available for retry.
 func (m *Manager) End(id, name string, stageErr error, options ...EndOption) error {
+	selector := Stage{Actor: m.actor}
+	for _, option := range options {
+		if err := option(&selector); err != nil {
+			return err
+		}
+	}
+	if selector.Actor.Key() == "" {
+		return model.ErrInvalidStage
+	}
 	return m.apply(id, func(r *recorder, doc store.Document) error {
 		var selected *store.StageUpdate
 		for i := range doc.Stages {
 			stage := &doc.Stages[i]
-			if stage.Name != name || !stage.FinishedAt.IsZero() {
+			if stage.Actor.Key() != selector.Actor.Key() || stage.Name != name || !stage.FinishedAt.IsZero() {
 				continue
 			}
 			if selected != nil {
@@ -52,7 +68,7 @@ func (m *Manager) End(id, name string, stageErr error, options ...EndOption) err
 func (s *stageHandle) apply(fn func(StageHandle) error) error {
 	return s.manager.apply(s.timelineID, func(r *recorder, doc store.Document) error {
 		for _, record := range doc.Stages {
-			if record.ID == s.id {
+			if record.ID == s.id && record.Actor.Key() == s.actor {
 				return fn(r.RestoreStage(record))
 			}
 		}
