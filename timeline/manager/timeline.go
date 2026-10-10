@@ -13,7 +13,7 @@ import (
 type Timeline interface {
 	// Record copies and accepts a completed stage into the cache. Recording may
 	// load Store on a miss; Flush confirms submission to the configured backend. ID, name, actual start/end times and a terminal status
-	// must be supplied. An omitted ParentID defaults to the root; a supplied parent
+	// must be supplied. An empty ParentID means no parent; a supplied parent
 	// need not exist and is preserved for later association. Actor is preserved.
 	// Repeated identical IDs are idempotent. Known conflicts fail immediately;
 	// conflicts with unseen remote facts fail Flush.
@@ -27,7 +27,7 @@ type Timeline interface {
 	// SetAttributes records attributes on this handle's operation start.
 	SetAttributes(attributes ...Attribute)
 	// Begin starts a stage using the local clock unless source times are supplied.
-	// Parentage is explicit; BeginWithContext is an optional context convenience.
+	// Parentage is explicit through WithParent; empty means no parent.
 	Begin(name string, opts ...StageOption) StageHandle
 	// Snapshot flushes this handle and collects its backend's current facts.
 	// Collection reports local flush and backend read success, never global
@@ -117,11 +117,9 @@ func FromContext(ctx context.Context) (Timeline, bool) {
 }
 
 // BeginWithContext is an optional adapter; Timeline itself does not require context
-// binding. It preserves cancellation and only inherits a parent from this timeline.
+// binding. It preserves cancellation and binds the new stage identity. Parentage
+// comes only from WithParent; the incoming context never supplies a parent.
 func BeginWithContext(ctx context.Context, t Timeline, name string, opts ...StageOption) (context.Context, StageHandle) {
-	if ref, ok := StageFromContext(ctx); ok && ref.TimelineID == t.ID() && ref.StageID != "" {
-		opts = append([]StageOption{WithParent(ref.StageID)}, opts...)
-	}
 	stage := t.Begin(name, opts...)
 	if stage.ID() == "" {
 		return ctx, stage

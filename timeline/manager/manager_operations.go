@@ -21,12 +21,9 @@ func (m *Manager) Record(id string, data Stage) error {
 	return m.cache.Write(context.Background(), id, store.Update{Completed: []Stage{data}})
 }
 
-// BeginContext preserves cancellation/deadlines and inherits parents only from
-// the same  Explicit parent options override the inherited reference.
+// BeginContext binds the new stage identity without changing cancellation.
+// Parentage comes only from an explicit WithParent option.
 func (m *Manager) BeginContext(ctx context.Context, id, name string, options ...StageOption) (context.Context, StageHandle, error) {
-	if ref, ok := StageFromContext(ctx); ok && ref.TimelineID == id && ref.StageID != "" {
-		options = append([]StageOption{WithParent(ref.StageID)}, options...)
-	}
 	stage, err := m.Begin(id, name, options...)
 	if err != nil {
 		return ctx, nil, err

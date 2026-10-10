@@ -60,9 +60,6 @@ func MergeDocument(id string, current Document, update Update) (doc Document, ch
 		if err := model.ValidateCompleted(id, incoming); err != nil {
 			return Document{}, false, err
 		}
-		if incoming.ParentID == "" {
-			incoming.ParentID = model.RootID(id)
-		}
 		revision := uint64(2)
 		if i, ok := indexes[incoming.ID]; ok {
 			old := doc.Stages[i]

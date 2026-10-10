@@ -15,7 +15,8 @@ func NewContext(ctx context.Context, t Timeline) context.Context { return manage
 // FromContext retrieves a Timeline explicitly attached with NewContext.
 func FromContext(ctx context.Context) (Timeline, bool) { return manager.FromContext(ctx) }
 
-// BeginWithContext preserves cancellation and only inherits a parent from this timeline.
+// BeginWithContext preserves cancellation and binds the new stage identity.
+// Only WithParent sets parentage; context binding never supplies a parent.
 func BeginWithContext(ctx context.Context, t Timeline, name string, opts ...StageOption) (context.Context, StageHandle) {
 	return manager.BeginWithContext(ctx, t, name, opts...)
 }

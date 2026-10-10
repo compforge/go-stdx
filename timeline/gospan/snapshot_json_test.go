@@ -20,7 +20,7 @@ func TestSnapshotJSONRoundTripAndOwnership(t *testing.T) {
 	}
 	input["names"].([]string)[0] = "after"
 	parentCtx, parent := timeline.BeginWithContext(ctx, tl, "parent")
-	_, child := timeline.BeginWithContext(parentCtx, tl, "child", timeline.WithAttributes(timeline.Attribute{Key: "count", Value: 9007199254740993}))
+	_, child := timeline.BeginWithContext(parentCtx, tl, "child", timeline.WithParent(parent.ID()), timeline.WithAttributes(timeline.Attribute{Key: "count", Value: 9007199254740993}))
 	progress, err := tl.Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)

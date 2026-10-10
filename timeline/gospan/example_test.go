@@ -17,7 +17,7 @@ func ExampleNew() {
 		panic(err)
 	}
 	prepareCtx, prepare := timeline.BeginWithContext(ctx, tl, "prepare")
-	_, workspace := timeline.BeginWithContext(prepareCtx, tl, "resolve_workspace")
+	_, workspace := timeline.BeginWithContext(prepareCtx, tl, "resolve_workspace", timeline.WithParent(prepare.ID()))
 	workspace.End(nil)
 	prepare.End(nil)
 

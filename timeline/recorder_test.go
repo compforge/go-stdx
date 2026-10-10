@@ -45,7 +45,7 @@ func TestSharedHandlesActorHierarchyAndLateStages(t *testing.T) {
 	}
 	worker := handle(t, "sandbox", store, "scheduler")
 	remoteCtx := timeline.NewStageContext(ctx, remote)
-	_, stage := timeline.BeginWithContext(remoteCtx, worker, "acquire_carrier")
+	_, stage := timeline.BeginWithContext(remoteCtx, worker, "acquire_carrier", timeline.WithParent(remote.StageID))
 	if err := worker.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestSharedHandlesActorHierarchyAndLateStages(t *testing.T) {
 	_, s := timeline.BeginWithContext(remoteCtx, unrelated, "isolated")
 	s.End(nil)
 	isolated, _ := unrelated.Snapshot(ctx)
-	if isolated.Stages[0].ParentID != isolated.RootStageID {
+	if isolated.Stages[0].ParentID != "" {
 		t.Fatal("foreign timeline parent leaked")
 	}
 }

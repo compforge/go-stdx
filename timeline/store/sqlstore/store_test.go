@@ -56,7 +56,7 @@ func TestIndependentProcessesContributeStages(t *testing.T) {
 			t.Fatal(err)
 		}
 		ctx := timeline.NewStageContext(context.Background(), ref)
-		_, stage := timeline.BeginWithContext(ctx, tl, "ensure_runtime", timeline.WithAttributes(timeline.Attribute{Key: "worker", Value: id}))
+		_, stage := timeline.BeginWithContext(ctx, tl, "ensure_runtime", timeline.WithParent(ref.StageID), timeline.WithAttributes(timeline.Attribute{Key: "worker", Value: id}))
 		// Persist a running boundary as a live observer would see it.
 		if err := tl.Flush(ctx); err != nil {
 			t.Fatal(err)

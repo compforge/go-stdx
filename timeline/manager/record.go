@@ -11,9 +11,6 @@ func (t *recorder) Record(stage Stage) error {
 	if err := model.ValidateCompleted(t.id, stage); err != nil {
 		return err
 	}
-	if stage.ParentID == "" {
-		stage.ParentID = model.RootID(t.id)
-	}
 	stage.Attributes = model.CloneJSONAttributes(stage.Attributes)
 	t.mu.Lock()
 	defer t.mu.Unlock()

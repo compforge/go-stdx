@@ -74,8 +74,9 @@ SetAttributes 即时返回记录错误。只有结束事实被成功接收后，
 完整 Stage 数据传入。需要执行中更新时可使用 StageHandle.SetAttributes。值在记录调用
 返回前完成 JSON 编码，后续修改调用方对象不会改变已接收事实。
 
-Manager.BeginContext 继承 context 中属于同一 timeline 的 StageRef，保留取消与截止时间。
-WithParent 显式指定关联；父阶段可以缺失或迟到，SDK 不通过远端查询验证它是否存在。
+父阶段只由 `WithParent` 或补录 Stage 的 `ParentID` 显式指定；空值表示没有父阶段，
+不会默认关联操作根阶段。带 context 的辅助方法保留取消与截止时间并绑定新阶段身份，
+不会读取 context 推断父阶段。父阶段可以缺失或迟到，SDK 不通过远端查询验证它是否存在。
 跨进程只传播纯数据 StageRef。请求取消不自动结束实际工作。
 
 Start 的相同调用保留文档中已经接受的时间，包括缓存 miss 后恢复的开始时间；名称或初始
