@@ -1,4 +1,4 @@
-package timeline_test
+package store_test
 
 import (
 	"bytes"
@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/compforge/go-stdx/timeline"
+	timelinestore "github.com/compforge/go-stdx/timeline/store"
 )
 
 func TestLegacyAttributesRoundTrip(t *testing.T) {
@@ -38,7 +39,7 @@ func TestAttributesTakePrecedenceOverLegacyKey(t *testing.T) {
 		`{"fields":{"legacy":true},"attributes":{"current":9007199254740993}}`,
 		`{"fields":{"legacy":true},"attributes":{}}`,
 	} {
-		for _, dst := range []any{&timeline.Stage{}, &timeline.StageUpdate{}, &timeline.Document{}, &timeline.Snapshot{}} {
+		for _, dst := range []any{&timeline.Stage{}, &timelinestore.StageUpdate{}, &timelinestore.Document{}, &timeline.Snapshot{}} {
 			if err := json.Unmarshal([]byte(input), dst); err != nil {
 				t.Fatal(err)
 			}
@@ -51,7 +52,7 @@ func TestAttributesTakePrecedenceOverLegacyKey(t *testing.T) {
 			}
 		}
 		// Document/Snapshot use a compact stage codec rather than Stage.UnmarshalJSON.
-		for _, dst := range []any{&timeline.Document{}, &timeline.Snapshot{}} {
+		for _, dst := range []any{&timelinestore.Document{}, &timeline.Snapshot{}} {
 			if err := json.Unmarshal([]byte(`{"stages":[`+input+`]}`), dst); err != nil {
 				t.Fatal(err)
 			}

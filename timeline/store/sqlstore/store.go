@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/compforge/go-stdx/timeline"
+	"github.com/compforge/go-stdx/timeline/store"
 )
 
 // Store uses timelines(id, payload, version, created_at, updated_at). id is the
@@ -20,39 +20,39 @@ type Store struct{ db *sql.DB }
 
 func New(db *sql.DB) *Store { return &Store{db: db} }
 
-func (s *Store) load(ctx context.Context, id string) (timeline.Document, uint64, error) {
+func (s *Store) load(ctx context.Context, id string) (store.Document, uint64, error) {
 	var raw []byte
 	var version uint64
 	err := s.db.QueryRowContext(ctx, "SELECT payload, version FROM timelines WHERE id = ?", id).Scan(&raw, &version)
 	if errors.Is(err, sql.ErrNoRows) {
-		return timeline.Document{}, 0, timeline.ErrNotFound
+		return store.Document{}, 0, store.ErrNotFound
 	}
 	if err != nil {
-		return timeline.Document{}, 0, err
+		return store.Document{}, 0, err
 	}
-	var doc timeline.Document
+	var doc store.Document
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return doc, 0, fmt.Errorf("decode timeline %s: %w", id, err)
 	}
 	return doc, version, nil
 }
-func (s *Store) Read(ctx context.Context, id string) (timeline.Document, error) {
+func (s *Store) Read(ctx context.Context, id string) (store.Document, error) {
 	doc, _, err := s.load(ctx, id)
 	return doc, err
 }
 
 // Merge retries only confirmed version races. An ambiguous commit returns an
 // error; retrying the same update is safe even if the first commit succeeded.
-func (s *Store) Merge(ctx context.Context, id string, update timeline.Update) error {
+func (s *Store) Merge(ctx context.Context, id string, update store.Update) error {
 	for attempt := 0; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		current, version, err := s.load(ctx, id)
-		if err != nil && !errors.Is(err, timeline.ErrNotFound) {
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return err
 		}
-		next, changed, err := timeline.MergeDocument(id, current, update)
+		next, changed, err := store.MergeDocument(id, current, update)
 		if err != nil || !changed {
 			return err
 		}
@@ -96,4 +96,4 @@ func (s *Store) Merge(ctx context.Context, id string, update timeline.Update) er
 	}
 }
 
-var _ timeline.Store = (*Store)(nil)
+var _ store.Store = (*Store)(nil)

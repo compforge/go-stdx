@@ -1,30 +1,32 @@
-package timeline
+package store
 
 import (
 	"cmp"
 	"slices"
 	"time"
+
+	"github.com/compforge/go-stdx/timeline/model"
 )
 
 // Snapshot returns detached read-time data. Storage success is set by the
 // reader, never persisted as a claim about future collection completeness.
-func (d Document) Snapshot(capturedAt time.Time) Snapshot {
-	d = cloneDocument(d)
-	stages := make([]Stage, len(d.Stages))
+func (d Document) Snapshot(capturedAt time.Time) model.Snapshot {
+	d = d.Clone()
+	stages := make([]model.Stage, len(d.Stages))
 	for i := range d.Stages {
 		stages[i] = d.Stages[i].Stage
 	}
 	sortStages(stages)
 	status := d.Status
 	if status == "" {
-		status = Running
+		status = model.Unknown
 	}
-	return Snapshot{ID: d.ID, RootStageID: d.RootStageID, Operation: d.Operation,
+	return model.Snapshot{ID: d.ID, RootStageID: d.RootStageID, Operation: d.Operation,
 		StartedAt: d.StartedAt, FinishedAt: d.FinishedAt, CapturedAt: capturedAt,
 		Status: status, Error: d.Error, Attributes: d.Attributes, Stages: stages}
 }
-func sortStages(stages []Stage) {
-	slices.SortFunc(stages, func(a, b Stage) int {
+func sortStages(stages []model.Stage) {
+	slices.SortFunc(stages, func(a, b model.Stage) int {
 		if order := a.StartedAt.Compare(b.StartedAt); order != 0 {
 			return order
 		}

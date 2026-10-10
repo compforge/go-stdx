@@ -15,6 +15,7 @@ import (
 
 	"github.com/akmadian/gospan"
 	"github.com/compforge/go-stdx/timeline"
+	"github.com/compforge/go-stdx/timeline/store"
 	"github.com/google/uuid"
 )
 
@@ -91,7 +92,7 @@ func (t *recorder) Begin(name string, opts ...timeline.StageOption) timeline.Sta
 		return inertStage{}
 	}
 	if _, exists := t.stages[data.ID]; exists {
-		t.attributeErr = errors.Join(t.attributeErr, timeline.ErrConflict)
+		t.attributeErr = errors.Join(t.attributeErr, store.ErrConflict)
 		return inertStage{}
 	}
 	// Parent IDs are timeline data; only a local live handle supplies a native parent.
@@ -118,7 +119,7 @@ func (t *recorder) Record(data timeline.Stage) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if existing := t.stages[data.ID]; existing != nil {
-		return timeline.ErrConflict
+		return store.ErrConflict
 	}
 	if err := t.imports.Record(data); err != nil {
 		return err
@@ -135,19 +136,20 @@ func (t *recorder) SetAttributes(attributes ...timeline.Attribute) {
 	}
 }
 
-func (s *stage) SetAttributes(attributes ...timeline.Attribute) {
+func (s *stage) SetAttributes(attributes ...timeline.Attribute) error {
 	s.owner.mu.Lock()
 	defer s.owner.mu.Unlock()
 	if !s.ended {
 		s.span.SetAttrs(s.owner.attrs(attributes)...)
 	}
+	return s.owner.attributeErr
 }
 
-func (s *stage) End(err error, opts ...timeline.EndOption) {
+func (s *stage) End(err error, opts ...timeline.EndOption) error {
 	s.owner.mu.Lock()
 	defer s.owner.mu.Unlock()
 	if s.ended {
-		return
+		return nil
 	}
 	now := time.Now()
 	data := s.data
@@ -169,6 +171,7 @@ func (s *stage) End(err error, opts ...timeline.EndOption) {
 	s.span.End()
 	s.ended = true
 	s.owner.active--
+	return s.owner.attributeErr
 }
 
 func (t *recorder) Snapshot(ctx context.Context) (timeline.Snapshot, error) {
@@ -220,7 +223,7 @@ func (t *recorder) snapshot(collectionErr error) (timeline.Snapshot, error) {
 	err := errors.Join(collectionErr, t.attributeErr)
 	t.mu.Unlock()
 	imports, importErr := t.imports.Snapshot(context.Background())
-	if errors.Is(importErr, timeline.ErrNotFound) && imports.Collection.LocalFlushed {
+	if errors.Is(importErr, store.ErrNotFound) && imports.Collection.LocalFlushed {
 		importErr = nil
 	}
 	err = errors.Join(err, importErr)
@@ -268,9 +271,9 @@ type inertStage struct{}
 
 type attributeValue struct{ value json.RawMessage }
 
-func (inertStage) SetAttributes(...timeline.Attribute) {}
-func (inertStage) End(error, ...timeline.EndOption)    {}
-func (inertStage) ID() timeline.StageID                { return "" }
+func (inertStage) SetAttributes(...timeline.Attribute) error { return nil }
+func (inertStage) End(error, ...timeline.EndOption) error    { return nil }
+func (inertStage) ID() timeline.StageID                      { return "" }
 
 func (t *recorder) Flush(ctx context.Context) error {
 	_, err := t.Snapshot(ctx)

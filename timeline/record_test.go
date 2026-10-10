@@ -13,6 +13,7 @@ import (
 
 	"github.com/compforge/go-stdx/timeline"
 	gospantimeline "github.com/compforge/go-stdx/timeline/gospan"
+	timelinestore "github.com/compforge/go-stdx/timeline/store"
 )
 
 func completedStage() timeline.Stage {
@@ -151,7 +152,7 @@ func TestRecordConflictsAreNotCoalescedAway(t *testing.T) {
 				if err := tl.Record(b); err != nil {
 					t.Fatal(err)
 				}
-				if err := tl.Flush(ctx); !errors.Is(err, timeline.ErrConflict) {
+				if err := tl.Flush(ctx); !errors.Is(err, timelinestore.ErrConflict) {
 					t.Fatalf("conflict silently accepted: %v", err)
 				}
 			})
@@ -181,7 +182,7 @@ func TestExplicitTimesAndParentWithoutContext(t *testing.T) {
 
 func TestConcurrentRecordHandlesDeduplicateAndRetainEveryStage(t *testing.T) {
 	ctx := context.Background()
-	store := timeline.NewMemoryStore()
+	store := timelinestore.NewMemoryStore()
 	var wg sync.WaitGroup
 	for i := range 20 {
 		wg.Add(1)
@@ -212,7 +213,7 @@ func TestConcurrentRecordHandlesDeduplicateAndRetainEveryStage(t *testing.T) {
 
 func TestRecordCompletesKnownStartWithoutCallerRevision(t *testing.T) {
 	ctx := context.Background()
-	store := timeline.NewMemoryStore()
+	store := timelinestore.NewMemoryStore()
 	a, _ := timeline.New("id", timeline.WithStore(store))
 	data := completedStage()
 	a.Begin(data.Name, timeline.WithStageID(data.ID), timeline.WithStartTime(data.StartedAt))
@@ -228,7 +229,7 @@ func TestRecordCompletesKnownStartWithoutCallerRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A delayed start cannot reopen the imported completion.
-	if err := store.Merge(ctx, "id", timeline.Update{Stages: pending.Stages}); err != nil {
+	if err := store.Merge(ctx, "id", timelinestore.Update{Stages: pending.Stages}); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := store.Read(ctx, "id")

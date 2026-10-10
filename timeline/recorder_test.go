@@ -13,9 +13,10 @@ import (
 	"time"
 
 	"github.com/compforge/go-stdx/timeline"
+	timelinestore "github.com/compforge/go-stdx/timeline/store"
 )
 
-func handle(t *testing.T, id string, store timeline.Store, actor string) *timeline.Recorder {
+func handle(t *testing.T, id string, store timelinestore.Store, actor string) *timeline.Recorder {
 	t.Helper()
 	tl, err := timeline.New(id, timeline.WithStore(store), timeline.WithActor(timeline.Actor{ID: actor, Name: "pod-" + actor}))
 	if err != nil {
@@ -26,7 +27,7 @@ func handle(t *testing.T, id string, store timeline.Store, actor string) *timeli
 
 func TestSharedHandlesActorHierarchyAndLateStages(t *testing.T) {
 	ctx := context.Background()
-	store := timeline.NewMemoryStore()
+	store := timelinestore.NewMemoryStore()
 	owner := handle(t, "sandbox", store, "api")
 	if err := owner.Start(ctx, "sandbox_start"); err != nil {
 		t.Fatal(err)
@@ -84,7 +85,7 @@ func TestSharedHandlesActorHierarchyAndLateStages(t *testing.T) {
 
 func TestConcurrentHandlesAndSnapshots(t *testing.T) {
 	ctx := context.Background()
-	store := timeline.NewMemoryStore()
+	store := timelinestore.NewMemoryStore()
 	owner := handle(t, "same", store, "owner")
 	if err := owner.Start(ctx, "parallel"); err != nil {
 		t.Fatal(err)
@@ -132,11 +133,11 @@ func TestConcurrentHandlesAndSnapshots(t *testing.T) {
 }
 
 type lostAcknowledgement struct {
-	timeline.Store
+	timelinestore.Store
 	once sync.Once
 }
 
-func (s *lostAcknowledgement) Merge(ctx context.Context, id string, update timeline.Update) error {
+func (s *lostAcknowledgement) Merge(ctx context.Context, id string, update timelinestore.Update) error {
 	if err := s.Store.Merge(ctx, id, update); err != nil {
 		return err
 	}
@@ -147,7 +148,7 @@ func (s *lostAcknowledgement) Merge(ctx context.Context, id string, update timel
 
 func TestFlushRetriesAcceptedRecordsWithoutDuplicating(t *testing.T) {
 	ctx := context.Background()
-	store := &lostAcknowledgement{Store: timeline.NewMemoryStore()}
+	store := &lostAcknowledgement{Store: timelinestore.NewMemoryStore()}
 	tl := handle(t, "retry", store, "writer")
 	if err := tl.Start(ctx, "start"); err == nil {
 		t.Fatal("lost acknowledgement should be visible")
@@ -168,19 +169,19 @@ func TestFlushRetriesAcceptedRecordsWithoutDuplicating(t *testing.T) {
 	// Another coordinator cannot rewrite the accepted business outcome.
 	other := handle(t, "retry", store, "other")
 	got, err := other.Finish(ctx, errors.New("conflicting outcome"))
-	if !errors.Is(err, timeline.ErrNotStarted) || got.Status != timeline.Succeeded {
+	if !errors.Is(err, timelinestore.ErrConflict) || got.Status != timeline.Succeeded {
 		t.Fatalf("terminal conflict: %+v %v", got, err)
 	}
 }
 
 func TestMergeIgnoresDelayedStageUpdates(t *testing.T) {
 	at := time.Now().UTC()
-	started := timeline.StageUpdate{Revision: 1, Stage: timeline.Stage{ID: "s", StartedAt: at, Status: timeline.Running}}
+	started := timelinestore.StageUpdate{Revision: 1, Stage: timeline.Stage{ID: "s", StartedAt: at, Status: timeline.Running}}
 	ended := started
 	ended.Revision, ended.FinishedAt, ended.Status = 2, at.Add(time.Second), timeline.Succeeded
-	store := timeline.NewMemoryStore()
-	for _, stage := range []timeline.StageUpdate{ended, started, ended} {
-		if err := store.Merge(context.Background(), "operation", timeline.Update{Stages: []timeline.StageUpdate{stage}}); err != nil {
+	store := timelinestore.NewMemoryStore()
+	for _, stage := range []timelinestore.StageUpdate{ended, started, ended} {
+		if err := store.Merge(context.Background(), "operation", timelinestore.Update{Stages: []timelinestore.StageUpdate{stage}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -192,7 +193,7 @@ func TestMergeIgnoresDelayedStageUpdates(t *testing.T) {
 
 func TestSharedSnapshotOwnershipAndEncodingFailure(t *testing.T) {
 	ctx := context.Background()
-	store := timeline.NewMemoryStore()
+	store := timelinestore.NewMemoryStore()
 	tl := handle(t, "json", store, "worker")
 	if err := tl.Start(ctx, "start"); err != nil {
 		t.Fatal(err)
@@ -241,12 +242,12 @@ func TestSharedSnapshotOwnershipAndEncodingFailure(t *testing.T) {
 }
 
 type blockedStore struct {
-	timeline.Store
+	timelinestore.Store
 	entered chan struct{}
 	unblock chan struct{}
 }
 
-func (s *blockedStore) Merge(ctx context.Context, id string, update timeline.Update) error {
+func (s *blockedStore) Merge(ctx context.Context, id string, update timelinestore.Update) error {
 	close(s.entered)
 	select {
 	case <-s.unblock:
@@ -256,7 +257,7 @@ func (s *blockedStore) Merge(ctx context.Context, id string, update timeline.Upd
 	}
 }
 func TestFlushDeadlineWhileAnotherFlushIsBlocked(t *testing.T) {
-	store := &blockedStore{Store: timeline.NewMemoryStore(), entered: make(chan struct{}), unblock: make(chan struct{})}
+	store := &blockedStore{Store: timelinestore.NewMemoryStore(), entered: make(chan struct{}), unblock: make(chan struct{})}
 	tl := handle(t, "blocked", store, "writer")
 	_, stage := timeline.BeginWithContext(context.Background(), tl, "work")
 	stage.End(nil)

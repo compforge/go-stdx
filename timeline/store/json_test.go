@@ -1,4 +1,4 @@
-package timeline_test
+package store_test
 
 import (
 	"bytes"
@@ -10,17 +10,18 @@ import (
 	"time"
 
 	"github.com/compforge/go-stdx/timeline"
+	timelinestore "github.com/compforge/go-stdx/timeline/store"
 )
 
-func actorDocument() timeline.Document {
+func actorDocument() timelinestore.Document {
 	at := time.Date(2026, 9, 28, 1, 0, 0, 0, time.UTC)
 	actors := []timeline.Actor{{}, {ID: "pod-a", Name: "sandctl-a"}, {ID: "pod-a", Name: "sandctl-a"}, {ID: "pod-a"}, {Name: "sandctl-a"}, {ID: "pod-a", Name: "renamed"}}
-	doc := timeline.Document{ID: "operation", RootStageID: "operation:operation", OperationRecord: timeline.OperationRecord{
+	doc := timelinestore.Document{ID: "operation", RootStageID: "operation:operation", OperationRecord: timelinestore.OperationRecord{
 		Revision: 3, Operation: "start", StartedAt: at, FinishedAt: at.Add(time.Minute), Status: timeline.Failed, Error: "timeout",
 		Attributes: map[string]json.RawMessage{"attempt": json.RawMessage(`9007199254740993`)},
 	}}
 	for i, actor := range actors {
-		doc.Stages = append(doc.Stages, timeline.StageUpdate{Revision: uint64(i + 1), Stage: timeline.Stage{
+		doc.Stages = append(doc.Stages, timelinestore.StageUpdate{Revision: uint64(i + 1), Stage: timeline.Stage{
 			ID: timeline.StageID(fmt.Sprint(i)), ParentID: doc.RootStageID, Name: "step", Actor: actor,
 			StartedAt: at.Add(time.Duration(i) * time.Second), FinishedAt: at.Add(time.Duration(i+1) * time.Second), Elapsed: time.Second,
 			Status: timeline.Failed, Error: "source failure", Code: "ResourceQuotaExceeded", Attributes: map[string]json.RawMessage{"count": json.RawMessage(`18446744073709551615`)},
@@ -86,7 +87,7 @@ func assertActorWire(t *testing.T, value any) []byte {
 func TestActorDictionaryDocumentAndSnapshotRoundTrip(t *testing.T) {
 	original := actorDocument()
 	raw := assertActorWire(t, original)
-	var restored timeline.Document
+	var restored timelinestore.Document
 	if err := json.Unmarshal(raw, &restored); err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +157,7 @@ func TestActorDictionaryRejectsInvalidReferencesAtomically(t *testing.T) {
 func TestActorDictionaryOmittedForUnattributedStages(t *testing.T) {
 	doc := actorDocument()
 	doc.Stages = doc.Stages[:1]
-	for _, value := range []any{doc, doc.Snapshot(doc.FinishedAt), timeline.Document{}, timeline.Snapshot{}} {
+	for _, value := range []any{doc, doc.Snapshot(doc.FinishedAt), timelinestore.Document{}, timeline.Snapshot{}} {
 		raw, err := json.Marshal(value)
 		if err != nil {
 			t.Fatal(err)
@@ -165,8 +166,8 @@ func TestActorDictionaryOmittedForUnattributedStages(t *testing.T) {
 			t.Fatalf("empty actors: %s", raw)
 		}
 		switch original := value.(type) {
-		case timeline.Document:
-			var decoded timeline.Document
+		case timelinestore.Document:
+			var decoded timelinestore.Document
 			if err := json.Unmarshal(raw, &decoded); err != nil {
 				t.Fatal(err)
 			}
@@ -183,7 +184,7 @@ func TestActorDictionaryOmittedForUnattributedStages(t *testing.T) {
 			}
 		}
 	}
-	var docZero timeline.Document
+	var docZero timelinestore.Document
 	if err := json.Unmarshal([]byte(`{"stages":[{"id":"s","actor_ref":0}]}`), &docZero); err != nil || docZero.Stages[0].Actor != (timeline.Actor{}) {
 		t.Fatalf("zero reference: %+v %v", docZero, err)
 	}
@@ -203,7 +204,7 @@ func TestActorDictionaryReducesRepeatedActorPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A distinct type bypasses Document's codec and represents the inline layout.
-	type inlineDocument timeline.Document
+	type inlineDocument timelinestore.Document
 	inline, err := json.Marshal(inlineDocument(doc))
 	if err != nil {
 		t.Fatal(err)

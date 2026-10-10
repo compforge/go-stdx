@@ -8,74 +8,104 @@ import (
 	"sync"
 	"time"
 
+	"github.com/compforge/go-stdx/timeline/model"
+	"github.com/compforge/go-stdx/timeline/store"
 	"github.com/google/uuid"
 )
 
-// Option configures a local handle. It does not perform remote IO.
+var ErrNotStarted = errors.New("timeline: operation attributes require a locally recorded start")
+
+// Option configures a writer without performing remote IO.
 type Option func(*Recorder)
 
-func WithStore(store Store) Option { return func(t *Recorder) { t.store = store } }
-func WithActor(actor Actor) Option { return func(t *Recorder) { t.actor = actor } }
+func WithStore(backend store.Store) Option { return func(t *Recorder) { t.store = backend } }
+func WithActor(actor Actor) Option         { return func(t *Recorder) { t.actor = actor } }
 
-// Recorder is a local handle bound to an operation ID. Independent handles use
-// the same ID and Store to contribute to one timeline; no Registry is needed.
-// Recording methods encode and buffer facts. Flush, Snapshot and Finish perform
-// bounded IO using their supplied context. Manager handles also persist in the
-// background; standalone handles require an explicit Flush before discarding.
-// Records not yet submitted to the Store are lost on process exit.
+// Writer accepts immutable recording facts and provides a persistence checkpoint.
+// A rejected write must not be retained. Acceptance and retention depend on the
+// implementation: Manager uses a best-effort loading cache; standalone Recorder
+// buffers until an explicit Flush. Implementations support concurrent callers.
+type Writer interface {
+	Write(store.Update) error
+	// RecordError retains collection loss independently of pending queue membership.
+	RecordError(error)
+	Flush(context.Context) error
+}
+
+// WithWriter selects the local submission policy. store.Store remains the read backend.
+// The writer must submit to the same store and operation ID as the Recorder.
+func WithWriter(writer Writer) Option { return func(t *Recorder) { t.writer = writer } }
+
+// Recorder owns one writer's revisions, operation facts and stage timing. It has
+// no process cache, worker or expiry policy. Multiple writers contribute to one ID.
 type Recorder struct {
 	id           string
-	store        Store
+	store        store.Store
 	actor        Actor
+	writer       Writer
 	mu           sync.Mutex
-	flushGate    chan struct{}
-	pending      []Update
-	flushing     int // immutable prefix, retained verbatim after ambiguous IO
-	manager      *Manager
-	operation    OperationRecord
+	operation    store.OperationRecord
 	attributeErr error
 	started      bool
 	finished     bool
+	terminal     *store.OperationRecord
 }
 
-// New constructs a handle without starting/restarting an operation or looking
-// it up remotely. WithStore selects shared storage; the default is private
-// in-memory storage. Only the business coordinator calls Start and Finish.
+// New binds a writer to an ID without recording a start or querying storage.
 func New(id string, options ...Option) (*Recorder, error) {
 	if id == "" {
 		return nil, ErrEmptyID
 	}
-	t := &Recorder{id: id, store: NewMemoryStore(), flushGate: make(chan struct{}, 1)}
+	t := &Recorder{id: id, store: store.NewMemoryStore()}
 	for _, option := range options {
 		option(t)
 	}
 	if t.store == nil {
 		return nil, errors.New("timeline: nil Store")
 	}
+	if t.writer == nil {
+		t.writer = &localWriter{id: id, store: t.store, gate: make(chan struct{}, 1)}
+	}
 	return t, nil
 }
-
 func (t *Recorder) ID() string { return t.id }
 
-// Start records the operation boundary and flushes it. Calling Start on another
-// handle never resets the document: a different start boundary conflicts. Retry a
-// failed flush with Flush; do not invent a second business start timestamp.
-func (t *Recorder) Start(ctx context.Context, operation string, attributes ...Attribute) error {
+// RecordStart accepts an optional beginning without forcing a flush. Repeating the
+// same facts is idempotent and retains the original time. Finish may arrive first.
+func (t *Recorder) RecordStart(operation string, attributes ...Attribute) error {
 	t.mu.Lock()
-	if t.started || t.finished {
-		t.mu.Unlock()
-		return ErrAlreadyStarted
+	defer t.mu.Unlock()
+	values, err := encodeAttributes(attributes)
+	if err != nil {
+		return t.recordError(err)
 	}
-	if t.manager != nil {
-		if err := t.manager.register(t); err != nil {
-			t.mu.Unlock()
-			return err
+	if t.started {
+		if t.operation.Operation != operation || !model.SameJSON(t.operation.Attributes, values) {
+			return store.ErrConflict
 		}
+		return nil
 	}
-	t.started = true
-	t.operation = OperationRecord{Revision: 1, StartedAt: time.Now().UTC(), Operation: operation, Status: Running, Attributes: t.encode(attributes)}
-	t.enqueueOperation()
-	t.mu.Unlock()
+	next := t.operation
+	next.Revision++
+	// spec: Start and Finish retain their independently observed times. A late
+	// Start may follow FinishedAt; preserve that order even if Duration is negative.
+	next.Operation, next.StartedAt, next.Attributes = operation, time.Now().UTC(), values
+	if !t.finished {
+		next.Status = Unknown
+	}
+	if err := t.enqueueOperation(next); err != nil {
+		return err
+	}
+	t.operation, t.started = next, true
+	return nil
+}
+
+// Start records the optional beginning and checkpoints this standalone writer.
+// Manager's ID-based Start uses RecordStart and submits in the background.
+func (t *Recorder) Start(ctx context.Context, operation string, attributes ...Attribute) error {
+	if err := t.RecordStart(operation, attributes...); err != nil {
+		return err
+	}
 	return t.Flush(ctx)
 }
 
@@ -98,112 +128,126 @@ func StageFromContext(ctx context.Context) (StageRef, bool) {
 	return ref, ok
 }
 
-func rootID(id string) StageID { return StageID("operation:" + id) }
-
+// Begin records a running stage. Use Err to inspect admission/encoding errors
+// when a noop handle is returned. Manager.Begin returns the error directly.
 func (t *Recorder) Begin(name string, opts ...StageOption) StageHandle {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := time.Now()
-	data := Stage{ID: StageID(uuid.NewString()), ParentID: rootID(t.id), Name: name,
-		StartedAt: now.UTC(), Status: Running, Actor: t.actor}
+	data := Stage{ID: StageID(uuid.NewString()), ParentID: model.RootID(t.id), Name: name, StartedAt: now.UTC(), Status: Running, Actor: t.actor}
 	for _, opt := range opts {
 		if err := opt(&data); err != nil {
-			t.attributeErr = errors.Join(t.attributeErr, err)
-			return noopStage{}
-		}
-	}
-	if data.ID == "" || data.ID == data.ParentID || data.ID == rootID(t.id) || data.StartedAt.IsZero() {
-		t.attributeErr = errors.Join(t.attributeErr, ErrInvalidStage)
-		return noopStage{}
-	}
-	data.Attributes = cloneJSONAttributes(data.Attributes)
-	s := &recordedStage{owner: t, started: now, record: StageUpdate{Stage: data}}
-	if !data.StartedAt.Equal(now) {
-		s.started = time.Time{}
-	}
-	if t.manager != nil {
-		if err := t.manager.registerStage(s); err != nil {
 			t.recordError(err)
 			return noopStage{}
 		}
 	}
-	if err := s.enqueue(); err != nil {
-		s.ended = true
-		if t.manager != nil {
-			t.manager.removeStage(s)
-		}
+	if data.Name == "" || data.ID == "" || data.ID == data.ParentID || data.ID == model.RootID(t.id) || data.StartedAt.IsZero() {
+		t.recordError(ErrInvalidStage)
 		return noopStage{}
+	}
+	data.Attributes = model.CloneJSONAttributes(data.Attributes)
+	record := store.StageUpdate{Stage: data, Revision: 1}
+	if err := t.writer.Write(store.Update{Stages: []store.StageUpdate{record}}); err != nil {
+		t.recordError(err)
+		return noopStage{}
+	}
+	s := &recordedStage{owner: t, id: data.ID, started: now, record: record}
+	if !data.StartedAt.Equal(now) {
+		s.started = time.Time{}
 	}
 	return s
 }
 
 func (t *Recorder) SetAttributes(attributes ...Attribute) {
+	_ = t.UpdateAttributes(attributes...)
+}
+
+// UpdateAttributes updates a locally recorded start's attributes, returning
+// admission errors immediately. It does not require an operation to remain open.
+func (t *Recorder) UpdateAttributes(attributes ...Attribute) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if !t.started {
-		t.attributeErr = errors.Join(t.attributeErr, ErrNotStarted)
-		return
+		return t.recordError(ErrNotStarted)
 	}
-	if t.finished {
-		return
+	values, err := encodeAttributes(attributes)
+	if err != nil {
+		return t.recordError(err)
 	}
-	t.operation.Attributes = mergeAttributes(t.operation.Attributes, t.encode(attributes))
-	t.operation.Revision++
-	t.enqueueOperation()
+	next := t.operation
+	next.Attributes = mergeAttributes(model.CloneJSONAttributes(next.Attributes), values)
+	next.Revision++
+	if err := t.enqueueOperation(next); err != nil {
+		return err
+	}
+	t.operation = next
+	return nil
 }
 
 type recordedStage struct {
-	owner   *Recorder
-	record  StageUpdate
-	started time.Time // retains the monotonic clock for the measured duration
-	ended   bool
+	id       StageID // immutable even while record is replaced under the owner lock
+	owner    *Recorder
+	record   store.StageUpdate
+	started  time.Time
+	ended    bool
+	terminal *store.StageUpdate
 }
 
-func (s *recordedStage) ID() StageID { return s.record.ID }
+func (s *recordedStage) ID() StageID { return s.id }
 
-func (s *recordedStage) enqueue() error {
-	s.record.Revision++
-	record := s.record
-	record.Attributes = cloneJSONAttributes(record.Attributes)
-	return s.owner.enqueue(Update{Stages: []StageUpdate{record}})
+func (s *recordedStage) SetAttributes(attributes ...Attribute) error {
+	s.owner.mu.Lock()
+	defer s.owner.mu.Unlock()
+	if s.ended || s.terminal != nil {
+		return nil
+	}
+	values, err := encodeAttributes(attributes)
+	if err != nil {
+		return s.owner.recordError(err)
+	}
+	next := s.record
+	next.Attributes = mergeAttributes(model.CloneJSONAttributes(next.Attributes), values)
+	next.Revision++
+	if err := s.owner.writer.Write(store.Update{Stages: []store.StageUpdate{next}}); err != nil {
+		return err
+	}
+	s.record = next
+	return nil
 }
 
-func (s *recordedStage) SetAttributes(attributes ...Attribute) {
+func (s *recordedStage) End(stageErr error, opts ...EndOption) error {
 	s.owner.mu.Lock()
 	defer s.owner.mu.Unlock()
 	if s.ended {
-		return
+		return nil
 	}
-	s.record.Attributes = mergeAttributes(s.record.Attributes, s.owner.encode(attributes))
-	_ = s.enqueue()
-}
-
-func (s *recordedStage) End(err error, opts ...EndOption) {
-	s.owner.mu.Lock()
-	defer s.owner.mu.Unlock()
-	if s.ended {
-		return
-	}
-	s.ended = true
-	if s.owner.manager != nil {
-		defer s.owner.manager.removeStage(s)
-	}
-	now := time.Now()
-	s.record.FinishedAt = now.UTC()
-	for _, opt := range opts {
-		if optionErr := opt(&s.record.Stage); optionErr != nil {
-			s.owner.attributeErr = errors.Join(s.owner.attributeErr, optionErr)
+	if s.terminal == nil {
+		now := time.Now()
+		next := s.record
+		next.Attributes = model.CloneJSONAttributes(next.Attributes)
+		next.FinishedAt = now.UTC()
+		for _, opt := range opts {
+			if err := opt(&next.Stage); err != nil {
+				return s.owner.recordError(err)
+			}
 		}
+		if next.FinishedAt.IsZero() || next.FinishedAt.Before(next.StartedAt) {
+			return s.owner.recordError(ErrInvalidStage)
+		}
+		if !s.started.IsZero() && next.FinishedAt.Equal(now) {
+			next.Elapsed = now.Sub(s.started)
+		}
+		next.Status, next.Error = result(stageErr)
+		next.Revision++
+		// spec: Freeze the first valid result, but only seal after queue admission.
+		// Backpressure retries must submit the same terminal fact, not leave it running.
+		s.terminal = &next
 	}
-	if s.record.FinishedAt.IsZero() || s.record.FinishedAt.Before(s.record.StartedAt) {
-		s.owner.attributeErr = errors.Join(s.owner.attributeErr, ErrInvalidStage)
-		return
+	if err := s.owner.writer.Write(store.Update{Stages: []store.StageUpdate{*s.terminal}}); err != nil {
+		return err
 	}
-	if !s.started.IsZero() && s.record.FinishedAt.Equal(now) {
-		s.record.Elapsed = now.Sub(s.started)
-	}
-	s.record.Status, s.record.Error = result(err)
-	_ = s.enqueue()
+	s.record, s.ended = *s.terminal, true
+	return nil
 }
 
 func result(err error) (Status, string) {
@@ -216,22 +260,19 @@ func result(err error) (Status, string) {
 	return Failed, err.Error()
 }
 
-func (t *Recorder) encode(attributes []Attribute) map[string]json.RawMessage {
+func encodeAttributes(attributes []Attribute) (map[string]json.RawMessage, error) {
 	if len(attributes) == 0 {
-		return nil
+		return nil, nil
 	}
 	values := make(map[string]json.RawMessage, len(attributes))
 	for _, attribute := range attributes {
 		value, err := json.Marshal(attribute.Value)
 		if err != nil {
-			if t.attributeErr == nil {
-				t.attributeErr = fmt.Errorf("%w: %s: %v", ErrInvalidAttribute, attribute.Key, err)
-			}
-			continue
+			return nil, fmt.Errorf("%w: %s: %v", ErrInvalidAttribute, attribute.Key, err)
 		}
 		values[attribute.Key] = value
 	}
-	return values
+	return values, nil
 }
 
 func mergeAttributes(dst, src map[string]json.RawMessage) map[string]json.RawMessage {
@@ -247,167 +288,78 @@ func mergeAttributes(dst, src map[string]json.RawMessage) map[string]json.RawMes
 	return dst
 }
 
-// Flush acknowledges records buffered before this call acquired the flush lock.
-// A failed/ambiguous merge retains identical revisions for a safe retry.
-// It cannot flush buffers owned by another handle or process.
+// Flush checkpoints the configured writer. A Manager-backed writer checkpoints
+// its ID; a standalone writer checkpoints only its own buffer.
 func (t *Recorder) Flush(ctx context.Context) error {
-	select {
-	case t.flushGate <- struct{}{}:
-		defer func() { <-t.flushGate }()
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	t.mu.Lock()
-	remaining := len(t.pending)
-	attributeErr := t.attributeErr
-	t.mu.Unlock()
-	for remaining > 0 {
-		t.mu.Lock()
-		if t.flushing == 0 {
-			t.flushing = remaining
-		}
-		updates := append([]Update(nil), t.pending[:t.flushing]...)
-		t.mu.Unlock()
-		update, err := coalesceUpdates(updates)
-		if err != nil {
-			return errors.Join(err, attributeErr)
-		}
-		if err := t.store.Merge(ctx, t.id, update); err != nil {
-			return errors.Join(err, attributeErr)
-		}
-		t.mu.Lock()
-		t.pending = append([]Update(nil), t.pending[len(updates):]...)
-		t.flushing = 0
-		t.mu.Unlock()
-		remaining -= len(updates)
-	}
-	return attributeErr
+	return errors.Join(t.writer.Flush(ctx), t.Err())
 }
 
-func coalesceUpdates(updates []Update) (Update, error) {
-	// Coalesce intermediate states before IO; only latest revisions are durable.
-	update := Update{}
-	stages := make(map[StageID]StageUpdate)
-	for _, pending := range updates {
-		update.Completed = append(update.Completed, pending.Completed...)
-		if pending.Operation != nil {
-			update.Operation = pending.Operation
-		}
-		for _, stage := range pending.Stages {
-			if old, ok := stages[stage.ID]; ok && old.Revision == stage.Revision && !sameJSON(old, stage) {
-				return Update{}, ErrConflict
-			}
-			stages[stage.ID] = stage
-		}
+// Err reports recording errors on this handle. Submission failures are returned
+// immediately; accepted-data loss remains visible through the writer's checkpoint.
+func (t *Recorder) Err() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.attributeErr
+}
+func (t *Recorder) recordError(err error) error {
+	if t.attributeErr == nil {
+		t.attributeErr = err
 	}
-	for _, stage := range stages {
-		update.Stages = append(update.Stages, stage)
-	}
-	sortStageUpdates(update.Stages)
-	return update, nil
+	t.writer.RecordError(err)
+	return err
 }
 
 func (t *Recorder) Snapshot(ctx context.Context) (Snapshot, error) {
 	flushErr := t.Flush(ctx)
 	doc, readErr := t.store.Read(ctx, t.id)
 	if doc.ID == "" {
-		doc.ID, doc.RootStageID = t.id, rootID(t.id)
+		doc.ID, doc.RootStageID = t.id, model.RootID(t.id)
 	}
 	snapshot := doc.Snapshot(time.Now().UTC())
 	snapshot.Collection = Collection{LocalFlushed: flushErr == nil, StoreRead: readErr == nil}
 	return snapshot, errors.Join(flushErr, readErr)
 }
 
-// Finish records the business result once on this handle and returns the current
-// shared snapshot. Only the handle that called Start may finish; accepted boundaries are immutable.
-// It does not terminate stages, reject late observations, or close shared IO.
-func (t *Recorder) Finish(ctx context.Context, operationErr error) (Snapshot, error) {
-	finishErr := t.finishOperation(operationErr)
-	snapshot, captureErr := t.Snapshot(ctx)
-	err := errors.Join(finishErr, captureErr)
-	if err == nil && t.manager != nil {
-		t.manager.release(t)
-	}
-	return snapshot, err
-}
-
-func (t *Recorder) finishOperation(operationErr error) error {
+// RecordFinish accepts an optional result even without RecordStart. It never
+// ends stages or prevents late recording. Repeating the same result is idempotent.
+func (t *Recorder) RecordFinish(operationErr error) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if !t.started {
-		return ErrNotStarted
-	}
-	if !t.finished {
-		t.finished = true
-		t.operation.Revision++
-		t.operation.FinishedAt = time.Now().UTC()
-		t.operation.Status, t.operation.Error = result(operationErr)
-		t.enqueueOperation()
-	}
-	return nil
-}
-
-func (t *Recorder) enqueueOperation() {
-	operation := t.operation
-	operation.Attributes = cloneJSONAttributes(operation.Attributes)
-	_ = t.enqueue(Update{Operation: &operation})
-}
-
-// enqueue is called under mu. Only unsent full-state updates may be replaced:
-// a timed-out Merge might already have committed its immutable prefix.
-func (t *Recorder) enqueue(update Update) error {
-	if t.manager == nil {
-		t.pending = append(t.pending, update)
+	status, message := result(operationErr)
+	if t.finished {
+		if t.operation.Status != status || t.operation.Error != message {
+			return store.ErrConflict
+		}
 		return nil
 	}
-	index := -1
-	for i := t.flushing; i < len(t.pending); i++ {
-		old := t.pending[i]
-		switch {
-		case update.Operation != nil && old.Operation != nil:
-			index = i
-		case len(update.Stages) == 1 && len(old.Stages) == 1 && update.Stages[0].ID == old.Stages[0].ID:
-			previous, incoming := old.Stages[0], update.Stages[0]
-			if previous.Name != incoming.Name || previous.ParentID != incoming.ParentID || previous.Actor != incoming.Actor || !previous.StartedAt.Equal(incoming.StartedAt) ||
-				(incoming.Revision <= previous.Revision && !sameJSON(update, old)) {
-				return t.recordError(ErrConflict)
-			}
-			index = i
-		case len(update.Completed) == 1 && len(old.Completed) == 1 && update.Completed[0].ID == old.Completed[0].ID:
-			if !sameJSON(update, old) {
-				return t.recordError(ErrConflict)
-			}
-			index = i
-		}
-		if index >= 0 {
-			break
-		}
+	if t.terminal == nil {
+		next := t.operation
+		next.Revision++
+		next.FinishedAt = time.Now().UTC()
+		next.Status, next.Error = status, message
+		t.terminal = &next
 	}
-	if index < 0 && len(t.pending) >= t.manager.config.MaxPendingUpdates {
-		t.manager.mu.Lock()
-		t.manager.dropped++
-		t.manager.mu.Unlock()
-		return t.recordError(ErrBufferFull)
+	// Preserve the first result across rejected writes, including its timestamp.
+	next := *t.terminal
+	// A start/attribute update may have been accepted while the finish was pending.
+	next.StartedAt, next.Operation, next.Attributes = t.operation.StartedAt, t.operation.Operation, t.operation.Attributes
+	next.Revision = t.operation.Revision + 1
+	if err := t.enqueueOperation(next); err != nil {
+		return err
 	}
-	if err := t.manager.schedule(t); err != nil {
-		return t.recordError(err)
-	}
-	if index >= 0 {
-		t.pending[index] = update
-	} else {
-		t.pending = append(t.pending, update)
-	}
+	t.operation, t.finished = next, true
 	return nil
 }
 
-func (t *Recorder) recordError(err error) error {
-	if t.attributeErr == nil {
-		t.attributeErr = err
-	}
-	return err
+// Finish records an optional result and reads a snapshot for standalone callers.
+func (t *Recorder) Finish(ctx context.Context, operationErr error) (Snapshot, error) {
+	finishErr := t.RecordFinish(operationErr)
+	snapshot, err := t.Snapshot(ctx)
+	return snapshot, errors.Join(finishErr, err)
+}
+func (t *Recorder) enqueueOperation(operation store.OperationRecord) error {
+	operation.Attributes = model.CloneJSONAttributes(operation.Attributes)
+	return t.writer.Write(store.Update{Operation: &operation})
 }
 
 var _ Timeline = (*Recorder)(nil)

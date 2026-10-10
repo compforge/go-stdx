@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/compforge/go-stdx/timeline"
+	timelinestore "github.com/compforge/go-stdx/timeline/store"
 )
 
 func TestStageCodeIndependentOfResult(t *testing.T) {
@@ -90,7 +91,7 @@ func TestRecordedCodeIsImmutable(t *testing.T) {
 				if err := tl.Record(input); err != nil {
 					t.Fatal(err)
 				}
-				if err := tl.Flush(context.Background()); !errors.Is(err, timeline.ErrConflict) {
+				if err := tl.Flush(context.Background()); !errors.Is(err, timelinestore.ErrConflict) {
 					t.Fatalf("changed terminal code accepted: %v", err)
 				}
 			})
@@ -102,7 +103,7 @@ func TestLegacyStageCodeIsOptional(t *testing.T) {
 	// Both public snapshots and durable documents accept old payloads without code.
 	const legacy = `{"id":"operation","stages":[{"id":"stage","status":"failed","error":"quota exceeded"}]}`
 	var snapshot timeline.Snapshot
-	var document timeline.Document
+	var document timelinestore.Document
 	if err := json.Unmarshal([]byte(legacy), &snapshot); err != nil {
 		t.Fatal(err)
 	}
