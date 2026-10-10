@@ -53,8 +53,6 @@ You can record stages without declaring an operation beginning or result.
 
 ```go
 import (
-    "time"
-
     "github.com/compforge/go-stdx/timeline"
     "github.com/compforge/go-stdx/timeline/manager"
     "github.com/compforge/go-stdx/timeline/store/sqlstore"
@@ -62,7 +60,6 @@ import (
 
 // Configure once per process using the application's existing *sql.DB.
 m, err := manager.New(sqlstore.New(db), manager.Config{
-    TTL: time.Hour,
     MaxTimelines: 1024,
 })
 if err != nil {
@@ -92,7 +89,7 @@ a name, retain their returned handles to end them precisely.
 
 Manager serves reads and writes from memory, loading Store on a cache miss and
 creating missing timelines for writes. It saves changes in the background.
-Fixed TTL and LRU release cached copies; persisted stages can be restored and
+At capacity, LRU eviction releases cached copies; persisted stages can be restored and
 continued through their existing handles. Eviction does not finish a timeline.
 
 This is a best-effort cache: warm reads may lag other processes, and unsaved facts

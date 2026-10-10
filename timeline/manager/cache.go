@@ -20,7 +20,7 @@ type loadedEntry struct {
 }
 
 // ttlcache's Loader has no error/context return path. singleflight adapts the
-// supplied loader while ttlcache still owns residency, expiry and LRU.
+// supplied loader while ttlcache still owns residency and LRU.
 func (c *Manager) load(ctx context.Context, id string, loader loaderFunc) (*entry, bool, error) {
 	if id == "" {
 		return nil, false, model.ErrEmptyID
@@ -56,7 +56,6 @@ func (c *Manager) load(ctx context.Context, id string, loader loaderFunc) (*entr
 		if c.closed {
 			return nil, ErrClosed
 		}
-		c.items.DeleteExpired()
 		item, _ := c.items.GetOrSet(id, e)
 		return loadedEntry{entry: item.Value(), fromStore: true}, nil
 	})

@@ -3,14 +3,13 @@ package manager_test
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/compforge/go-stdx/timeline/manager"
 	timelinestore "github.com/compforge/go-stdx/timeline/store"
 )
 
 func Example() {
-	m, err := manager.New(timelinestore.NewMemoryStore(), manager.Config{TTL: time.Hour, MaxTimelines: 1024})
+	m, err := manager.New(timelinestore.NewMemoryStore(), manager.Config{MaxTimelines: 1024})
 	if err != nil {
 		panic(err)
 	}

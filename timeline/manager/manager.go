@@ -19,10 +19,8 @@ var ErrBufferFull = errors.New("timeline manager: pending save limit exceeded")
 var ErrStageNotFound = errors.New("timeline manager: stage not found")
 var ErrAmbiguousStage = errors.New("timeline manager: multiple running stages share this name")
 
-// Config bounds memory and backend calls. Zero fields select defaults. TTL is
-// fixed from insertion; reading and changing a cached document do not renew it.
+// Config bounds cache capacity and backend calls. Zero fields select defaults.
 type Config struct {
-	TTL                 time.Duration // default 1h
 	MaxTimelines        int           // default 1024 cached documents
 	FlushInterval       time.Duration // default 1s between background saves
 	ExportTimeout       time.Duration // default 5s for each Store read/merge
@@ -75,11 +73,8 @@ func New(backend store.Store, config Config) (*Manager, error) {
 	if backend == nil {
 		return nil, errors.New("timeline manager: nil Store")
 	}
-	if config.TTL < 0 || config.MaxTimelines < 0 || config.FlushInterval < 0 || config.ExportTimeout < 0 || config.MaxPendingTimelines < 0 || config.MaxPendingUpdates < 0 {
+	if config.MaxTimelines < 0 || config.FlushInterval < 0 || config.ExportTimeout < 0 || config.MaxPendingTimelines < 0 || config.MaxPendingUpdates < 0 {
 		return nil, errors.New("timeline manager: negative configuration")
-	}
-	if config.TTL == 0 {
-		config.TTL = time.Hour
 	}
 	if config.MaxTimelines == 0 {
 		config.MaxTimelines = 1024
@@ -101,7 +96,7 @@ func New(backend store.Store, config Config) (*Manager, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Manager{store: backend, config: config, pending: make(map[*entry]struct{}), ctx: ctx, cancel: cancel, done: make(chan struct{}), wake: make(chan struct{}, 1)}
-	c.items = ttlcache.New(ttlcache.WithTTL[string, *entry](config.TTL), ttlcache.WithCapacity[string, *entry](uint64(config.MaxTimelines)), ttlcache.WithDisableTouchOnHit[string, *entry]())
+	c.items = ttlcache.New(ttlcache.WithCapacity[string, *entry](uint64(config.MaxTimelines)))
 	c.stopEviction = c.items.OnEviction(func(_ context.Context, _ ttlcache.EvictionReason, item *ttlcache.Item[string, *entry]) {
 		e := item.Value()
 		e.mu.Lock()

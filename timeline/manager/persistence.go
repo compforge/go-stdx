@@ -104,23 +104,7 @@ func (c *Manager) save(ctx context.Context, e *entry) (result error) {
 }
 
 func (c *Manager) run() {
-	// Expiry is independent of saving: slow Store calls cannot retain cache
-	// entries beyond TTL. The bounded pending set owns any final save work.
-	cleaned := make(chan struct{})
-	go func() {
-		defer close(cleaned)
-		ticker := time.NewTicker(min(c.config.TTL, time.Second))
-		defer ticker.Stop()
-		for {
-			select {
-			case <-c.ctx.Done():
-				return
-			case <-ticker.C:
-				c.items.DeleteExpired()
-			}
-		}
-	}()
-	defer func() { <-cleaned; close(c.done) }()
+	defer close(c.done)
 	ticker := time.NewTicker(c.config.FlushInterval)
 	defer ticker.Stop()
 	for {

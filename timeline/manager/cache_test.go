@@ -13,10 +13,10 @@ import (
 	timelinestore "github.com/compforge/go-stdx/timeline/store"
 )
 
-func TestPersistedStageHandleSurvivesTTL(t *testing.T) {
+func TestPersistedStageHandleSurvivesEviction(t *testing.T) {
 	ctx := context.Background()
 	backend := timelinestore.NewMemoryStore()
-	m := newManager(t, backend, managed.Config{TTL: 30 * time.Millisecond})
+	m := newManager(t, backend, managed.Config{})
 	stage, err := m.Begin("task", "work", timeline.WithAttributes(timeline.Attribute{Key: "attempt", Value: 1}))
 	if err != nil {
 		t.Fatal(err)
@@ -28,7 +28,7 @@ func TestPersistedStageHandleSurvivesTTL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() bool { return m.Stats().CachedTimelines == 0 })
+	m.Evict("task")
 	if err = stage.SetAttributes(timeline.Attribute{Key: "restored", Value: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestPersistedStageHandleSurvivesTTL(t *testing.T) {
 		t.Fatalf("restore: %+v %v", after, err)
 	}
 	// Repeated End through the old handle remains idempotent after another eviction.
-	eventually(t, func() bool { return m.Stats().CachedTimelines == 0 })
+	m.Evict("task")
 	if err = stage.End(errors.New("ignored repeat")); err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestPermanentSaveConflictRetiresAndIsReported(t *testing.T) {
 	}
 }
 
-func TestTTLCleanupDoesNotWaitForStore(t *testing.T) {
+func TestLRUEvictionDoesNotWaitForStore(t *testing.T) {
 	backend := &managedStore{MemoryStore: timelinestore.NewMemoryStore()}
 	entered, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
@@ -197,14 +197,20 @@ func TestTTLCleanupDoesNotWaitForStore(t *testing.T) {
 			return ctx.Err()
 		}
 	}
-	m := newManager(t, backend, managed.Config{TTL: 30 * time.Millisecond, ExportTimeout: time.Second})
+	m := newManager(t, backend, managed.Config{MaxTimelines: 1, ExportTimeout: time.Second})
 	defer close(release)
 	if _, err := m.Begin("task", "work"); err != nil {
 		t.Fatal(err)
 	}
 	waitSignal(t, entered)
-	eventually(t, func() bool { return m.Stats().CachedTimelines == 0 })
-	if m.Stats().PendingTimelines != 1 {
-		t.Fatal("in-flight final save disappeared")
+	if _, err := m.Begin("replacement", "work"); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Stats(); got.CachedTimelines != 1 || got.PendingTimelines != 2 {
+		t.Fatalf("LRU did not release the cached copy while saving: %+v", got)
+	}
+	snapshot, err := m.Read(context.Background(), "replacement")
+	if err != nil || snapshot.Collection.StoreRead || len(snapshot.Stages) != 1 {
+		t.Fatalf("replacement not cached: %+v %v", snapshot, err)
 	}
 }

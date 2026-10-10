@@ -104,7 +104,7 @@ func TestLoadingFailuresAreBoundedAndNotCached(t *testing.T) {
 	}
 }
 
-func TestLRUAndFixedTTLUseStoreOnMiss(t *testing.T) {
+func TestLRUUsesStoreOnMiss(t *testing.T) {
 	backend := &loadingStore{MemoryStore: store.NewMemoryStore()}
 	for _, id := range []string{"a", "b", "c"} {
 		seed(t, backend.MemoryStore, id)
@@ -114,7 +114,7 @@ func TestLRUAndFixedTTLUseStoreOnMiss(t *testing.T) {
 		calls.Add(1)
 		return backend.MemoryStore.Read(ctx, id)
 	}
-	m := newManager(t, backend, managed.Config{MaxTimelines: 2, TTL: 80 * time.Millisecond})
+	m := newManager(t, backend, managed.Config{MaxTimelines: 2})
 	read := func(id string) timeline.Snapshot {
 		t.Helper()
 		s, err := m.Read(context.Background(), id)
@@ -133,9 +133,7 @@ func TestLRUAndFixedTTLUseStoreOnMiss(t *testing.T) {
 	if !read("b").Collection.StoreRead || calls.Load() != 4 {
 		t.Fatalf("b did not reload: calls=%d", calls.Load())
 	}
-	// Repeated reads touch LRU but must eventually observe a reload at fixed TTL.
-	before := calls.Load()
-	eventually(t, func() bool { read("b"); return calls.Load() > before })
+
 }
 
 func TestReadOwnsDataAndDoesNotFlush(t *testing.T) {

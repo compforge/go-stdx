@@ -12,7 +12,7 @@ func (m *Manager) Start(id, operation string, attributes ...timeline.Attribute) 
 	return m.apply(id, func(r *timeline.Recorder, _ store.Document) error { return r.RecordStart(operation, attributes...) })
 }
 
-// Finish optionally records a result. It neither ends stages nor expires cache.
+// Finish optionally records a result. It neither ends stages nor evicts cached data.
 func (m *Manager) Finish(id string, operationErr error) error {
 	return m.apply(id, func(r *timeline.Recorder, _ store.Document) error { return r.RecordFinish(operationErr) })
 }

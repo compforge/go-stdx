@@ -23,7 +23,7 @@ timeline/
 依赖方向为 `manager → timeline → store → model`，`sqlstore → store`。
 核心 Recorder 通过 Writer 契约提交事实；共享值类型通过 `timeline.Stage`、`timeline.Snapshot`
 等别名对外提供，存储包不依赖录制或管理生命周期。
-Manager 直接持有 `jellydator/ttlcache/v3` 和 Store；固定 TTL 与 LRU 只决定内存驻留期。
+Manager 直接持有 `jellydator/ttlcache/v3` 和 Store；最大数量与 LRU 控制缓存驻留，保存周期独立配置。
 miss 从 Store 恢复，写入缺失 ID 才创建；Read 不强制落盘，Flush 是显式检查点。
 保存采用尽力而为策略：淘汰时尝试最终保存，失败报告后释放缓冲；Finish 只记录业务结果。
 ID 的业务含义、执行调度与数据库保留期归应用。详细契约见 `docs/timeline.md`。
