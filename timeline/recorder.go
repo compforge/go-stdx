@@ -66,6 +66,12 @@ func (t *Recorder) Start(ctx context.Context, operation string, attributes ...At
 		t.mu.Unlock()
 		return ErrAlreadyStarted
 	}
+	if t.manager != nil {
+		if err := t.manager.register(t); err != nil {
+			t.mu.Unlock()
+			return err
+		}
+	}
 	t.started = true
 	t.operation = OperationRecord{Revision: 1, StartedAt: time.Now().UTC(), Operation: operation, Status: Running, Attributes: t.encode(attributes)}
 	t.enqueueOperation()
@@ -115,7 +121,17 @@ func (t *Recorder) Begin(name string, opts ...StageOption) StageHandle {
 	if !data.StartedAt.Equal(now) {
 		s.started = time.Time{}
 	}
+	if t.manager != nil {
+		if err := t.manager.registerStage(s); err != nil {
+			t.recordError(err)
+			return noopStage{}
+		}
+	}
 	if err := s.enqueue(); err != nil {
+		s.ended = true
+		if t.manager != nil {
+			t.manager.removeStage(s)
+		}
 		return noopStage{}
 	}
 	return s
@@ -169,6 +185,9 @@ func (s *recordedStage) End(err error, opts ...EndOption) {
 		return
 	}
 	s.ended = true
+	if s.owner.manager != nil {
+		defer s.owner.manager.removeStage(s)
+	}
 	now := time.Now()
 	s.record.FinishedAt = now.UTC()
 	for _, opt := range opts {
@@ -306,11 +325,20 @@ func (t *Recorder) Snapshot(ctx context.Context) (Snapshot, error) {
 // shared snapshot. Only the handle that called Start may finish; accepted boundaries are immutable.
 // It does not terminate stages, reject late observations, or close shared IO.
 func (t *Recorder) Finish(ctx context.Context, operationErr error) (Snapshot, error) {
+	finishErr := t.finishOperation(operationErr)
+	snapshot, captureErr := t.Snapshot(ctx)
+	err := errors.Join(finishErr, captureErr)
+	if err == nil && t.manager != nil {
+		t.manager.release(t)
+	}
+	return snapshot, err
+}
+
+func (t *Recorder) finishOperation(operationErr error) error {
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	if !t.started {
-		t.mu.Unlock()
-		snapshot, err := t.Snapshot(ctx)
-		return snapshot, errors.Join(ErrNotStarted, err)
+		return ErrNotStarted
 	}
 	if !t.finished {
 		t.finished = true
@@ -319,8 +347,7 @@ func (t *Recorder) Finish(ctx context.Context, operationErr error) (Snapshot, er
 		t.operation.Status, t.operation.Error = result(operationErr)
 		t.enqueueOperation()
 	}
-	t.mu.Unlock()
-	return t.Snapshot(ctx)
+	return nil
 }
 
 func (t *Recorder) enqueueOperation() {

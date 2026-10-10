@@ -19,8 +19,8 @@ func TestSnapshotJSONRoundTripAndOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	input["names"].([]string)[0] = "after"
-	parentCtx, parent := timeline.BeginContext(ctx, tl, "parent")
-	_, child := timeline.BeginContext(parentCtx, tl, "child", timeline.WithAttributes(timeline.Attribute{Key: "count", Value: 9007199254740993}))
+	parentCtx, parent := timeline.BeginWithContext(ctx, tl, "parent")
+	_, child := timeline.BeginWithContext(parentCtx, tl, "child", timeline.WithAttributes(timeline.Attribute{Key: "count", Value: 9007199254740993}))
 	progress, err := tl.Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -93,9 +93,9 @@ func TestInvalidAttributesReportCollectionFailureAndStillFinish(t *testing.T) {
 			invalid := timeline.Attribute{Key: "nan", Value: math.NaN()}
 			var stage timeline.StageHandle
 			if call == "begin" {
-				_, stage = timeline.BeginContext(ctx, tl, "child", timeline.WithAttributes(invalid))
+				_, stage = timeline.BeginWithContext(ctx, tl, "child", timeline.WithAttributes(invalid))
 			} else {
-				_, stage = timeline.BeginContext(ctx, tl, "child")
+				_, stage = timeline.BeginWithContext(ctx, tl, "child")
 			}
 			if call == "set" {
 				tl.SetAttributes(invalid)

@@ -41,13 +41,13 @@ WithEndAttributes 记录，重复 key 以后写为准。属性在记录调用返
 
 ## 协作流程
 
-协调方构造句柄并调用 Start，记录业务开始和操作类型。异步组件只需业务 ID、同一
-Store 的配置和可选 Actor，就能通过默认 Manager 的 For 入口构造自己的句柄。普通函数可以直接接收 Timeline；
-NewContext / FromContext 仅是可选的传递便利。
+协调方调用 Start，记录业务开始和操作类型。业务组件通过操作 ID 和阶段名记录进展，
+Manager 定位本地执行方并委派给 Recorder / StageHandle；跨进程通过共享 Store 汇总。
+需要隔离实例时可以显式持有句柄，NewContext / FromContext 是可选的传递便利。
 
 Begin 不需要 context，WithParent 显式指定父阶段，StageHandle.ID 返回阶段身份。
 BeginContext 是可选适配：继承同一 timeline 的 StageRef，保留取消和截止时间，
-返回携带新 StageRef 的 context，不隐式绑定 Timeline。StageFromContext /
+返回携带新 StageRef 的 context，不隐式绑定 Timeline。显式句柄使用 BeginWithContext 适配。StageFromContext /
 NewStageContext 可以跨进程传递纯数据父引用；没有父引用时挂在操作根下。
 ParentID 是关联线索，记录时不查询或要求父 stage 已存在，子 stage 可以先于父 stage
 上报。已提供的 ParentID 原样保留，读取时按已有数据关联；展示时未能关联的 stage
@@ -78,8 +78,9 @@ Finish。记录错误由 Flush、Snapshot、Finish 返回，业务错误保存�
 ## Manager 与后台提交
 
 Manager 的生命周期对应进程内的一套 Store 配置，Timeline / Stage 是业务使用的操作句柄。
-Manager 管理待提交数据，Store 执行持久化与读取。不同句柄即使绑定同一 ID，也保留各自
-的 Actor 和根操作权限；获取句柄不代表接管另一个协调方的 Start / Finish。
+Manager 管理本地活跃操作、阶段查找和待提交数据，Store 执行持久化与读取。
+同一 Manager、同一 ID 最多有一个协调方；多个参与方保留各自的 Actor 和阶段修订。
+获得操作 ID 不等于跨进程接管协调方或阶段；根操作接管仍属于应用的业务协议。
 
 记录方法在锁内更新内存并标记待提交，用合并信号唤醒一个共享 worker。worker 在锁外
 执行 IO，定时器负责重试及漏掉唤醒后的处理。信号不携带唯一一份数据，因此信号合并
@@ -89,75 +90,106 @@ Manager 管理待提交数据，Store 执行持久化与读取。不同句柄即
 留在后续批次；成功只移除已确认批次，不能清空整个缓冲区。单个句柄的失败按指数退避
 重试，间隔上限为 30 秒，每次 IO 有独立超时。信号不能绕过失败退避。
 
-Manager 只强引用待提交句柄，提交完毕后释放引用。业务仍持有的句柄随时可以再次产生
-变更；业务丢弃句柄也不会丢失已接收的待提交记录。Manager 不依据业务根的 Finish
-回收其他执行方，也不代替 Store 的持久化数据保留策略。
+Manager 的活跃索引保留协调方和运行中阶段，让调用方可以只传 ID / 名字。
+Finish 成功后释放协调方，End 后释放阶段名；操作没有协调方和运行中阶段时移出索引。
+根操作完成不回收尚在执行的阶段。请求取消也不自动结束实际工作，业务放弃本地执行时
+调用 Release 释放索引。活跃操作和阶段分别有容量上限，防止漏结束造成无界保留。
+
+待提交队列独立保留已接收的事实，直到写入确认。释放索引不丢弃队列、不删除 Store 数据，
+也不禁止仍持有的句柄补报；迟到阶段继续汇入同一文档。Store 的保留期由应用管理。
 
 使用约束：
 
-- 服务启动时 NewManager 并安装默认实例，业务通过 For 按 ID 获取独立句柄；需要显式隔离时
-  使用 Manager.New。WithActor 可用；
+- 服务启动时 NewManager 并安装默认实例，业务通过 ID 操作；需要显式隔离时
+  使用 Manager 的同名方法或 Manager.New。WithActor 可用于句柄，WithStageActor 可用于阶段；
   Store 由 Manager 统一提供。Start、Snapshot、Finish 保留显式提交及采集的语义。
-- Manager.Flush 提交调用时已待提交的本地句柄，单个 Recorder.Flush 只提交本句柄。
-  两者都不能排空远端进程，也不等待无限产生的新记录。
+- Manager.Flush 提交所有待提交本地句柄，Manager.FlushID / 包级 Flush 只提交指定 ID，
+  Recorder.Flush 只提交本句柄。它们都不能排空远端进程，也不等待未来的新记录。
 - 服务退出时先停止生产，再用独立、有限时的 context 调用 Shutdown。它拒绝新记录、
   取消后台 IO，再尝试排空已接收数据；失败后可以重试 Shutdown。Store 连接仍由应用关闭。
 - 缓冲限制按待提交句柄数及每句柄更新数计数，包含正在提交的批次。超限拒绝新更新，
   不阻塞业务等待数据库；DroppedUpdates 计数增长，句柄保留 ErrBufferFull，后续 Flush /
   Snapshot 可查询记录损失，Record 直接返回该错误。属性大小由调用方约束。
 - 后台错误默认通过 slog 报告，每个句柄的连续失败只报一次；OnError 可接入应用的错误
-  处理器，回调必须快速返回，不能调用 Shutdown。无待提交数据的句柄不保留在 Manager，
-  Manager.Flush 不追溯已回收句柄的历史采集错误；使用 Stats 监控溢出计数。
+  处理器，回调必须快速返回，不能调用 Shutdown。已提交且没有活跃协调方或阶段的句柄可回收；
+  Manager.Flush 不追溯已回收句柄的历史采集错误，使用 Stats 监控溢出计数。
 
 默认提供最终可见性：业务完成后记录仍可能稍晚到达 Store。需要跨进程严格交接时，执行方
 仍须确认 Flush 成功后发布业务完成。内存缓冲不提供进程崩溃后的恢复保证。
 
 ## 全局入口与默认 Manager
 
-应用启动时创建一个 Manager 并通过 `SetDefaultManager` 安装为进程默认值。
-业务组件调用 `For(id)` 获取写入句柄，使用阶段接口记录事实，无需传递 Manager。
-全局入口只保存默认 Manager 的引用；它不按业务 ID 缓存句柄，也不启动额外的后台循环。
-同一 ID 的多个句柄通过 Store 汇入同一文档，各自保留记录者身份与完成权限。
+应用启动时创建一个 Manager 并通过 SetDefaultManager 安装为进程默认值。
+业务层只传 operationID；阶段在名称唯一时也只传名字。全局函数选择默认 Manager，
+由 Manager 查找本地活跃对象、委派记录和管理后台提交。
 
-`For` 只创建本地写入句柄，不读取文档、不开始业务操作。首次创建方调用 Start / Finish，
-其它组件可以随时按 ID 补充阶段。`Read(ctx, id)` 只读取已经持久化的事实；
-需要先提交本句柄数据时使用 Recorder.Snapshot。读取不代表其它句柄或副本已经全部提交。
+| 业务意图 | 全局入口 |
+| --- | --- |
+| 开始操作 | `Start(ctx, id, operation, ...Option)` |
+| 开始阶段 | `Begin(id, name, ...StageOption)` |
+| 继承父阶段 | `BeginContext(ctx, id, name, ...StageOption)` |
+| 更新操作属性 | `SetAttributes(id, ...Attribute)` |
+| 更新阶段属性 | `SetStageAttributes(id, name, ...Attribute)` |
+| 结束阶段 | `End(id, name, err, ...EndOption)` |
+| 补录完整区间 | `Record(id, Stage)` |
+| 提交该 ID 的本地记录 | `Flush(ctx, id)` |
+| 提交并采集快照 | `Capture(ctx, id)` |
+| 完成操作并采集快照 | `Finish(ctx, id, err)` |
+| 只读已持久化文档 | `Read(ctx, id)` |
+| 放弃本地活跃索引 | `Release(id)` |
 
-默认实例的安装与资源生命周期分开：SetDefaultManager 返回之前的默认实例，供测试恢复，
-不自动关闭任何 Manager。切换默认值只影响后续 For / Read，已取得的句柄仍归原 Manager。
-退出时先停止并等待业务写入方，再使用独立的限时 context 调用 Manager.Shutdown，
-最后由应用关闭 Store。Shutdown 后仍可通过 Read 查询尚未关闭的 Store。
+Start 注册本进程的协调方，返回值可忽略；后续 SetAttributes / Finish 按 ID 定位它。
+创建或容量准入失败返回 nil；开始记录或提交失败保留协调方和原始开始时间，通过 Flush
+重试。重复 Start 不替换协调方。Finish 第一次确定结果；采集失败时保留索引供同 ID 重试，
+成功后释放协调方，后续查询使用 Capture / Read。一个进程未启动该根操作时，SetAttributes /
+Finish 返回 ErrNotStarted；它仍可以贡献阶段。
 
-未安装默认实例时 For / Read 返回 ErrNoDefaultManager，不隐式启动 worker 或创建内存存储。
-需要隔离的测试或嵌入式调用可直接使用显式 Manager；`New` 始终构造独立句柄，行为不受
-默认 Manager 影响。修改全局默认值的测试应串行执行，并在结束时恢复。
+Begin 返回的 StageHandle 也可忽略，End / SetStageAttributes 会定位该名字的唯一运行中阶段。
+同名阶段可顺序重复；并行同名阶段返回 ErrAmbiguousStage，应使用各自句柄精确操作。
+名字只用于本地活跃查找，持久化身份仍为独立 StageID。End 后该阶段退出名字索引，再次按名
+End 返回 ErrStageNotFound；持有原句柄的 End 仍然幂等。WithStageActor 标记当前阶段的执行者，
+Record 原样保留输入 Actor，参与方不会继承协调方的身份。
+
+Capture 返回 Snapshot 类型，因此避开 Go 中类型与函数同名的限制。它和 Finish 覆盖该 ID
+的所有当前待提交本地写入方；Read 只读取 Store。跨进程严格交接仍需各执行方先 Flush 成功，
+再发布业务完成状态。Summary、RunningStages 等纯数据查询直接作用于返回的 Snapshot。
+
+For 保留为独立句柄入口，供需要固定 Actor、单句柄屏障等显式场景使用；它不借用协调方权限。
+BeginWithContext 是显式 Timeline / gospan 的上下文适配器。业务主路径无需 NewContext /
+FromContext 传递 Timeline，只需传递 ID 和可选 StageRef。默认实例未安装时，全局操作返回
+ErrNoDefaultManager。
+
+SetDefaultManager 只切换引用，不关闭实例或搬迁活跃状态。启动生产者前安装；运行期间切换
+会使后续按 ID 的调用访问新的 Manager，原句柄仍属于旧实例。退出时停止并等待生产者，
+再用独立限时 context 调用 Shutdown 排空，最后关闭 Store。成功 Shutdown 释放活跃索引，
+不会代替业务 Finish；Store 尚未关闭时仍可 Read。修改默认值的测试串行执行并在结束时恢复。
 
 ```go
-// 启动入口：创建和安装，NewManager 已启动后台循环。
+// 启动入口：NewManager 已启动后台循环。
 m, err := timeline.NewManager(store, timeline.ManagerConfig{})
 if err != nil {
     return err
 }
 timeline.SetDefaultManager(m)
 
-// 业务组件：只感知 ID 和句柄。这里只向已有业务操作补充阶段。
-tl, err := timeline.For(operationID)
-if err != nil {
+// 业务不传 Timeline / Stage 对象。
+if _, err := timeline.Start(ctx, operationID, "prepare"); err != nil {
     return err
 }
-stage := tl.Begin("prepare_files")
-stage.End(nil)
-
-// 退出入口：先等业务写入方退出，再排空，最后关闭 Store。
-shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-defer cancel()
-return m.Shutdown(shutdownCtx)
+if _, err := timeline.Begin(operationID, "prepare_files"); err != nil {
+    return err
+}
+workErr := prepareFiles(ctx)
+if err := timeline.End(operationID, "prepare_files", workErr); err != nil {
+    return err
+}
+snapshot, recordingErr := timeline.Finish(ctx, operationID, workErr)
 ```
 
 ## 采集范围
 
-Snapshot 先 Flush 本句柄，再从 Store 读取一致视图。Collection.LocalFlushed 表示
-本句柄检查点之前的记录已成功提交且属性可编码；Collection.StoreRead 表示此次读取
+Recorder.Snapshot 先 Flush 本句柄；包级 Capture / Finish 则提交该 ID 的本地待提交句柄，
+再从 Store 读取。Collection.LocalFlushed 表示对应本地检查点的提交成功；Collection.StoreRead 表示此次读取
 成功。这两个字段都不宣称所有进程的缓冲区已排空，也不能发现尚未开始记录的参与者。
 
 业务 Status 与这两个采集事实独立。操作可以已经 succeeded，但部分阶段还显示

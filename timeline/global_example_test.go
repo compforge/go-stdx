@@ -8,7 +8,7 @@ import (
 	"github.com/compforge/go-stdx/timeline"
 )
 
-func ExampleFor() {
+func ExampleStart() {
 	m, err := timeline.NewManager(timeline.NewMemoryStore(), timeline.ManagerConfig{})
 	if err != nil {
 		panic(err)
@@ -17,23 +17,22 @@ func ExampleFor() {
 	defer timeline.SetDefaultManager(previous)
 
 	// Business code knows only its operation ID. The creator owns Start/Finish.
-	owner, err := timeline.For("task-42")
+	_, err = timeline.Start(context.Background(), "task-42", "prepare")
 	if err != nil {
 		panic(err)
 	}
-	if err := owner.Start(context.Background(), "prepare"); err != nil {
-		panic(err)
-	}
-	worker, err := timeline.For("task-42")
+	_, err = timeline.Begin("task-42", "files")
 	if err != nil {
 		panic(err)
 	}
-	worker.Begin("files").End(nil)
+	if err := timeline.End("task-42", "files", nil); err != nil {
+		panic(err)
+	}
 
 	// The application joins producers before draining its process Manager.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if _, err := owner.Finish(ctx, nil); err != nil {
+	if _, err := timeline.Finish(ctx, "task-42", nil); err != nil {
 		panic(err)
 	}
 	if err := m.Shutdown(ctx); err != nil {

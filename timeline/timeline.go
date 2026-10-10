@@ -175,9 +175,9 @@ func FromContext(ctx context.Context) (Timeline, bool) {
 	return t, ok && t != nil
 }
 
-// BeginContext is an optional adapter; Timeline itself does not require context
+// BeginWithContext is an optional adapter; Timeline itself does not require context
 // binding. It preserves cancellation and only inherits a parent from this timeline.
-func BeginContext(ctx context.Context, t Timeline, name string, opts ...StageOption) (context.Context, StageHandle) {
+func BeginWithContext(ctx context.Context, t Timeline, name string, opts ...StageOption) (context.Context, StageHandle) {
 	if ref, ok := StageFromContext(ctx); ok && ref.TimelineID == t.ID() && ref.StageID != "" {
 		opts = append([]StageOption{WithParent(ref.StageID)}, opts...)
 	}

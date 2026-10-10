@@ -56,7 +56,7 @@ func TestCollectionDeadlineAndFinishRetry(t *testing.T) {
 	if !errors.Is(err, context.Canceled) || (partial.Collection.LocalFlushed && partial.Collection.StoreRead) || partial.ID != tl.ID() {
 		t.Fatalf("uncollected snapshot claimed success: %+v err=%v", partial, err)
 	}
-	_, stage := timeline.BeginContext(context.Background(), tl, "active")
+	_, stage := timeline.BeginWithContext(context.Background(), tl, "active")
 	if _, err := tl.Finish(canceled, nil); !errors.Is(err, timeline.ErrActiveStages) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("active stage and collection errors = %v", err)
 	}
@@ -91,7 +91,7 @@ func TestCheckpointAttributeDoesNotCollideWithUserAttributes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, stage := timeline.BeginContext(ctx, tl, "work", timeline.WithAttributes(timeline.Attribute{Key: checkpointKey, Value: "user value"}))
+	_, stage := timeline.BeginWithContext(ctx, tl, "work", timeline.WithAttributes(timeline.Attribute{Key: checkpointKey, Value: "user value"}))
 	stage.End(nil)
 	for range 3 {
 		if s, err := tl.Snapshot(context.Background()); err != nil || len(s.Attributes) != 1 || string(s.Attributes[checkpointKey]) != "999" {
@@ -116,7 +116,7 @@ func TestConstructorIsolatesForeignGospanContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, stage := timeline.BeginContext(ctx, tl, "child")
+	_, stage := timeline.BeginWithContext(ctx, tl, "child")
 	stage.End(nil)
 	s, err := tl.Finish(context.Background(), nil)
 	if err != nil || s.Operation != "own" || len(s.Stages) != 1 || s.Stages[0].ParentID != s.RootStageID {

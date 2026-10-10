@@ -55,7 +55,7 @@ func TestIndependentProcessesContributeStages(t *testing.T) {
 			t.Fatal(err)
 		}
 		ctx := timeline.NewStageContext(context.Background(), ref)
-		_, stage := timeline.BeginContext(ctx, tl, "ensure_runtime", timeline.WithAttributes(timeline.Attribute{Key: "worker", Value: id}))
+		_, stage := timeline.BeginWithContext(ctx, tl, "ensure_runtime", timeline.WithAttributes(timeline.Attribute{Key: "worker", Value: id}))
 		// Persist a running boundary as a live observer would see it.
 		if err := tl.Flush(ctx); err != nil {
 			t.Fatal(err)
@@ -80,7 +80,7 @@ func TestIndependentProcessesContributeStages(t *testing.T) {
 	if err := owner.Start(ctx, "sandbox_start"); err != nil {
 		t.Fatal(err)
 	}
-	parentCtx, parent := timeline.BeginContext(ctx, owner, "startup")
+	parentCtx, parent := timeline.BeginWithContext(ctx, owner, "startup")
 	ref, _ := timeline.StageFromContext(parentCtx)
 	encoded, _ := json.Marshal(ref)
 	if err := owner.Flush(ctx); err != nil {
@@ -149,7 +149,7 @@ func TestIndependentProcessesContributeStages(t *testing.T) {
 		t.Fatalf("reopened error code lost: %+v", failed)
 	}
 	// A contributor may legitimately arrive after the business terminal record.
-	_, late := timeline.BeginContext(ctx, reader, "late_report")
+	_, late := timeline.BeginWithContext(ctx, reader, "late_report")
 	late.End(nil)
 	after, err := reader.Snapshot(ctx)
 	if err != nil || len(after.Stages) != workers+2 || after.Status != timeline.Succeeded {

@@ -18,7 +18,7 @@ func ExampleRegistry() {
 
 	// Pass Timeline directly along a call chain.
 	prepare := func(ctx context.Context, tl timeline.Timeline) {
-		_, stage := timeline.BeginContext(ctx, tl, "prepare")
+		_, stage := timeline.BeginWithContext(ctx, tl, "prepare")
 		stage.End(nil)
 	}
 	prepare(ctx, tl)
@@ -28,7 +28,7 @@ func ExampleRegistry() {
 	if !ok {
 		panic("operation missing")
 	}
-	_, stage := timeline.BeginContext(ctx, joined, "provision")
+	_, stage := timeline.BeginWithContext(ctx, joined, "provision")
 	stage.End(nil)
 
 	// Context propagation is an optional caller choice.

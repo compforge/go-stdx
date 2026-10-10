@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,6 +25,9 @@ func TestGlobalRequiresExplicitSetup(t *testing.T) {
 	}
 	if _, err := timeline.Read(context.Background(), "task"); !errors.Is(err, timeline.ErrNoDefaultManager) {
 		t.Fatalf("Read: %v", err)
+	}
+	if recorder, err := timeline.Start(context.Background(), "task", "startup"); recorder != nil || !errors.Is(err, timeline.ErrNoDefaultManager) {
+		t.Fatalf("Start: %v, %v", recorder, err)
 	}
 	// Standalone construction neither depends on nor installs a global Manager.
 	if _, err := timeline.New("standalone"); err != nil {
@@ -182,5 +186,61 @@ func TestConcurrentDefaultSelection(t *testing.T) {
 		if found != 1 {
 			t.Fatalf("writer %d persisted to %d managers", i, found)
 		}
+	}
+}
+
+func TestGlobalStartOwnsOperation(t *testing.T) {
+	ctx := context.Background()
+	defaultManager(t, manager(t, timeline.NewMemoryStore(), timeline.ManagerConfig{}))
+	owner, err := timeline.Start(ctx, "task", "startup", timeline.WithActor(timeline.Actor{ID: "owner"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := timeline.Read(ctx, "task")
+	if err != nil || doc.Operation != "startup" || doc.Status != timeline.Running || doc.StartedAt.IsZero() {
+		t.Fatalf("start boundary not persisted: %+v, %v", doc, err)
+	}
+	owner.Begin("prepare").End(nil)
+	worker, err := timeline.For("task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := worker.Finish(ctx, nil); !errors.Is(err, timeline.ErrNotStarted) {
+		t.Fatalf("worker inherited completion authority: %v", err)
+	}
+	snapshot, err := owner.Finish(ctx, nil)
+	if err != nil || snapshot.Status != timeline.Succeeded || len(snapshot.Stages) != 1 || snapshot.Stages[0].Actor.ID != "owner" {
+		t.Fatalf("coordinator result: %+v, %v", snapshot, err)
+	}
+	if recorder, err := timeline.Start(ctx, "", "startup"); recorder != nil || !errors.Is(err, timeline.ErrEmptyID) {
+		t.Fatalf("invalid construction: %v, %v", recorder, err)
+	}
+}
+
+func TestGlobalStartRetainsHandleAfterPersistenceFailure(t *testing.T) {
+	ctx := context.Background()
+	unavailable := errors.New("store unavailable")
+	var available atomic.Bool
+	store := &managedStore{MemoryStore: timeline.NewMemoryStore()}
+	store.merge = func(ctx context.Context, id string, update timeline.Update) error {
+		if !available.Load() {
+			return unavailable
+		}
+		return store.MemoryStore.Merge(ctx, id, update)
+	}
+	defaultManager(t, manager(t, store, timeline.ManagerConfig{}))
+	owner, err := timeline.Start(ctx, "task", "startup")
+	if owner == nil || !errors.Is(err, unavailable) {
+		t.Fatalf("lost handle or persistence error: %v, %v", owner, err)
+	}
+	if err := owner.Start(ctx, "startup"); !errors.Is(err, timeline.ErrAlreadyStarted) {
+		t.Fatalf("failed persistence lost original start: %v", err)
+	}
+	available.Store(true)
+	if err := owner.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot, err := owner.Finish(ctx, nil); err != nil || snapshot.Status != timeline.Succeeded {
+		t.Fatalf("retry lost completion authority: %+v, %v", snapshot, err)
 	}
 }

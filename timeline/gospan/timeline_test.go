@@ -43,9 +43,9 @@ func snapshot(t *testing.T, tl timeline.Timeline) timeline.Snapshot {
 
 func TestNestedAndOverlappingStages(t *testing.T) {
 	ctx, tl := newTimeline(t)
-	parentCtx, parent := timeline.BeginContext(ctx, tl, "prepare")
-	_, child := timeline.BeginContext(parentCtx, tl, "workspace")
-	_, sibling := timeline.BeginContext(ctx, tl, "capacity")
+	parentCtx, parent := timeline.BeginWithContext(ctx, tl, "prepare")
+	_, child := timeline.BeginWithContext(parentCtx, tl, "workspace")
+	_, sibling := timeline.BeginWithContext(ctx, tl, "capacity")
 	partial := snapshot(t, tl)
 	if partial.Status != timeline.Running || len(partial.Stages) != 3 {
 		t.Fatalf("running snapshot = %+v", partial)
@@ -86,7 +86,7 @@ func TestNestedAndOverlappingStages(t *testing.T) {
 func TestStageResultsAndDetachedAttributes(t *testing.T) {
 	ctx, tl := newTimeline(t)
 	attributes := []timeline.Attribute{{Key: "count", Value: 1}}
-	_, failed := timeline.BeginContext(ctx, tl, "failed", timeline.WithAttributes(attributes...))
+	_, failed := timeline.BeginWithContext(ctx, tl, "failed", timeline.WithAttributes(attributes...))
 	attributes[0].Value = 99
 	failed.SetAttributes(timeline.Attribute{Key: "count", Value: 2})
 	before := snapshot(t, tl)
@@ -94,7 +94,7 @@ func TestStageResultsAndDetachedAttributes(t *testing.T) {
 	failed.End(failure)
 	failed.End(nil)
 	failed.SetAttributes(timeline.Attribute{Key: "count", Value: 3})
-	_, canceled := timeline.BeginContext(ctx, tl, "canceled")
+	_, canceled := timeline.BeginWithContext(ctx, tl, "canceled")
 	canceled.End(fmt.Errorf("waiting: %w", context.DeadlineExceeded))
 	final, err := tl.Finish(context.Background(), failure)
 	if err != nil || final.Status != timeline.Failed || final.Error != failure.Error() {
@@ -117,7 +117,7 @@ func TestStageResultsAndDetachedAttributes(t *testing.T) {
 
 func TestFinishRejectsActiveStagesThenFreezesFirstResult(t *testing.T) {
 	ctx, tl := newTimeline(t)
-	_, work := timeline.BeginContext(ctx, tl, "work")
+	_, work := timeline.BeginWithContext(ctx, tl, "work")
 	partial, err := tl.Finish(context.Background(), errors.New("premature result"))
 	if !errors.Is(err, timeline.ErrActiveStages) || partial.Status != timeline.Running || !partial.FinishedAt.IsZero() {
 		t.Fatalf("premature finish = %+v, %v", partial, err)
@@ -127,7 +127,7 @@ func TestFinishRejectsActiveStagesThenFreezesFirstResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	returnedCtx, ignored := timeline.BeginContext(ctx, tl, "too late")
+	returnedCtx, ignored := timeline.BeginWithContext(ctx, tl, "too late")
 	ignored.SetAttributes(timeline.Attribute{Key: "ignored", Value: true})
 	ignored.End(errors.New("ignored"))
 	second, err := tl.Finish(context.Background(), errors.New("too late"))
@@ -142,7 +142,7 @@ func TestCancellationDoesNotOwnOperationLifetime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stageCtx, stage := timeline.BeginContext(requestCtx, tl, "background")
+	stageCtx, stage := timeline.BeginWithContext(requestCtx, tl, "background")
 	cancel()
 	if stageCtx.Err() != context.Canceled {
 		t.Fatal("stage context lost request cancellation")
@@ -166,13 +166,13 @@ func TestCancellationDoesNotOwnOperationLifetime(t *testing.T) {
 
 func TestForeignTimelineContextCreatesIndependentRoot(t *testing.T) {
 	ctx, first := newTimeline(t)
-	foreignCtx, parent := timeline.BeginContext(timeline.NewContext(ctx, first), first, "foreign")
+	foreignCtx, parent := timeline.BeginWithContext(timeline.NewContext(ctx, first), first, "foreign")
 	second, err := gospantimeline.New(ctx, t.Name()+"-second", "operation")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _, _ = second.Finish(context.Background(), nil) })
-	childCtx, child := timeline.BeginContext(foreignCtx, second, "own")
+	childCtx, child := timeline.BeginWithContext(foreignCtx, second, "own")
 	child.End(nil)
 	parent.End(nil)
 	got := snapshot(t, second)
@@ -191,8 +191,8 @@ func TestConcurrentStagesAndSnapshots(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			parentCtx, parent := timeline.BeginContext(ctx, tl, fmt.Sprintf("parent-%d", i))
-			_, child := timeline.BeginContext(parentCtx, tl, "child")
+			parentCtx, parent := timeline.BeginWithContext(ctx, tl, fmt.Sprintf("parent-%d", i))
+			_, child := timeline.BeginWithContext(parentCtx, tl, "child")
 			child.SetAttributes(timeline.Attribute{Key: "worker", Value: i})
 			child.End(nil)
 			_ = snapshot(t, tl)
@@ -219,7 +219,7 @@ func TestConcurrentStagesAndSnapshots(t *testing.T) {
 
 func TestConcurrentEndKeepsOneResult(t *testing.T) {
 	ctx, tl := newTimeline(t)
-	_, stage := timeline.BeginContext(ctx, tl, "contended")
+	_, stage := timeline.BeginWithContext(ctx, tl, "contended")
 	var wg sync.WaitGroup
 	for i := range 64 {
 		wg.Add(1)
