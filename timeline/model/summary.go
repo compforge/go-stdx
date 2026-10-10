@@ -1,4 +1,4 @@
-package timeline
+package model
 
 import (
 	"fmt"

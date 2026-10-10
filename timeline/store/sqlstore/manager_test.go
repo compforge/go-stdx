@@ -13,7 +13,8 @@ import (
 	"time"
 
 	"github.com/compforge/go-stdx/timeline"
-	"github.com/compforge/go-stdx/timeline/sqlstore"
+	managed "github.com/compforge/go-stdx/timeline/manager"
+	"github.com/compforge/go-stdx/timeline/store/sqlstore"
 )
 
 // The reader has no access to the writers' buffers. Only automatic SQL writes
@@ -21,7 +22,7 @@ import (
 func TestManagersPersistAcrossProcesses(t *testing.T) {
 	if path := os.Getenv("TIMELINE_MANAGER_TEST_DB"); path != "" {
 		store := sqlstore.New(open(t, path))
-		m, err := timeline.NewManager(store, timeline.ManagerConfig{FlushInterval: 5 * time.Millisecond})
+		m, err := managed.New(store, managed.Config{FlushInterval: 5 * time.Millisecond})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -33,7 +34,7 @@ func TestManagersPersistAcrossProcesses(t *testing.T) {
 			}
 		})
 		actor := os.Getenv("TIMELINE_MANAGER_TEST_ACTOR")
-		r, err := m.New("shared", timeline.WithActor(timeline.Actor{ID: actor}))
+		r, err := m.NewWriter("shared", timeline.Actor{ID: actor})
 		if err != nil {
 			t.Fatal(err)
 		}

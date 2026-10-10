@@ -1,4 +1,4 @@
-package timeline
+package model
 
 import "encoding/json"
 
@@ -6,12 +6,12 @@ import "encoding/json"
 // stages and update revisions intact without promoting Stage.UnmarshalJSON to
 // the whole StageUpdate. Encoding always uses the public attributes key.
 type stageData Stage
-type stageAttributesJSON struct {
+type StageAttributesJSON struct {
 	stageData
 	LegacyAttributes map[string]json.RawMessage `json:"fields"`
 }
 
-func (s stageAttributesJSON) stage() Stage {
+func (s StageAttributesJSON) Stage() Stage {
 	result := Stage(s.stageData)
 	if result.Attributes == nil {
 		result.Attributes = s.LegacyAttributes
@@ -20,22 +20,10 @@ func (s stageAttributesJSON) stage() Stage {
 }
 
 func (s *Stage) UnmarshalJSON(raw []byte) error {
-	var wire stageAttributesJSON
+	var wire StageAttributesJSON
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		return err
 	}
-	*s = wire.stage()
-	return nil
-}
-
-func (s *StageUpdate) UnmarshalJSON(raw []byte) error {
-	var wire struct {
-		stageAttributesJSON
-		Revision uint64 `json:"revision"`
-	}
-	if err := json.Unmarshal(raw, &wire); err != nil {
-		return err
-	}
-	*s = StageUpdate{Stage: wire.stage(), Revision: wire.Revision}
+	*s = wire.Stage()
 	return nil
 }

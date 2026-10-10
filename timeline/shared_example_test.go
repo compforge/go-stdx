@@ -5,12 +5,13 @@ import (
 	"fmt"
 
 	"github.com/compforge/go-stdx/timeline"
+	timelinestore "github.com/compforge/go-stdx/timeline/store"
 )
 
 func ExampleNew() {
 	ctx := context.Background()
 	// A persistent Store can connect these handles across process boundaries.
-	store := timeline.NewMemoryStore()
+	store := timelinestore.NewMemoryStore()
 	owner, _ := timeline.New("sandbox-42", timeline.WithStore(store))
 	if err := owner.Start(ctx, "sandbox_start"); err != nil {
 		panic(err)

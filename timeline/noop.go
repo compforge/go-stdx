@@ -24,6 +24,6 @@ func (noop) Flush(context.Context) error { return nil }
 
 type noopStage struct{}
 
-func (noopStage) ID() StageID                { return "" }
-func (noopStage) SetAttributes(...Attribute) {}
-func (noopStage) End(error, ...EndOption)    {}
+func (noopStage) ID() StageID                      { return "" }
+func (noopStage) SetAttributes(...Attribute) error { return nil }
+func (noopStage) End(error, ...EndOption) error    { return nil }

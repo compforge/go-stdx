@@ -46,66 +46,65 @@ Used by [case-code-review](https://github.com/qiankunli/case-code-review), [host
 
 ## Operation timelines
 
-Record one operation across concurrent components and processes using its operation ID.
-Each process installs a Manager against the same Store. Business code uses the ID and
-stage names; the Manager finds live recorders and persists their updates in the background.
-Stages retain their own intervals, parents, results and executor identities, including
-parallel work and late observations.
+Collect stage facts from concurrent components and processes under one timeline ID.
+The `timeline/manager` package supplies six business entry points:
+`Begin`, `End`, `Record`, `Read`, and optional `Start` / `Finish`.
+You can record stages without declaring an operation beginning or result.
 
 ```go
-// Configure once per process with the application's existing *sql.DB.
-manager, err := timeline.NewManager(sqlstore.New(db), timeline.ManagerConfig{})
+import (
+    "time"
+
+    "github.com/compforge/go-stdx/timeline"
+    "github.com/compforge/go-stdx/timeline/manager"
+    "github.com/compforge/go-stdx/timeline/store/sqlstore"
+)
+
+// Configure once per process using the application's existing *sql.DB.
+m, err := manager.New(sqlstore.New(db), manager.Config{
+    TTL: time.Hour,
+    MaxTimelines: 1024,
+})
 if err != nil {
     return err
 }
-timeline.SetDefaultManager(manager)
+manager.SetDefault(m)
 
-// Business code passes only the operation ID between components.
-if _, err := timeline.Start(ctx, operationID, "sandbox_start"); err != nil {
-    return err
-}
-if _, err := timeline.Begin(operationID, "acquire_carrier",
+// Neither Start nor Finish is required.
+if _, err := manager.Begin(operationID, "acquire_carrier",
     timeline.WithStageActor(timeline.Actor{Name: podName}),
 ); err != nil {
     return err
 }
 workErr := acquireCarrier(ctx)
-if err := timeline.End(operationID, "acquire_carrier", workErr); err != nil {
+if err := manager.End(operationID, "acquire_carrier", workErr); err != nil {
     return err
 }
-snapshot, recordingErr := timeline.Finish(ctx, operationID, workErr)
-// json.Marshal(snapshot) serializes the complete view; workErr and recordingErr
-// describe separate business and recording outcomes.
+snapshot, recordingErr := manager.Read(ctx, operationID)
+// json.Marshal(snapshot) serializes the detached view.
 ```
 
-`SetAttributes(id, ...)` updates operation attributes; `SetStageAttributes(id, name, ...)`
-updates a running stage. `BeginContext(ctx, id, name, ...)` carries parentage in context.
-`Record(id, Stage)` imports a completed interval with its original timestamps and actor.
-Stages with the same name may run concurrently; name-based updates then return
-`ErrAmbiguousStage`. Keep their returned StageHandles to identify them precisely.
+`Record(id, Stage)` imports a completed interval with its source timestamps and actor.
+`Start(id, operation, ...Attribute)` optionally records the operation beginning;
+`Finish(id, result)` optionally records its outcome, even without Start. Both buffer
+facts without remote IO. Undeclared outcomes remain `unknown`; Finish accepts late stages.
+For parallel stages sharing a name, retain their returned handles to end them precisely.
 
-`Capture(ctx, id)` flushes this ID's local writers and returns a Snapshot.
-`Read(ctx, id)` only reads persisted data. Background persistence is eventually visible;
-for a strict cross-process handoff, call `Flush(ctx, id)` before publishing completion.
-The coordinator process calls `Start` and `Finish`; other processes contribute stages.
-Snapshot methods provide `Summary()`, `RunningStages()` and `LatestFailedStage()`.
+Manager automatically persists accepted records. Local timelines expire at a fixed TTL
+from creation; access updates LRU but never extends TTL. At capacity, the least recently
+used timeline is evicted. Eviction invalidates local handles while preserving accepted
+pending writes and stored history. ID-based writes can create a fresh local entry.
 
-Failed start persistence retains the coordinator for `Flush` retry. Failed Finish retains
-it for another Finish attempt with the original result. Successful Finish releases the
-coordinator; End releases the stage's name. `Release(id)` abandons local lookup state
-without changing business results, discarding pending writes or deleting stored history.
-Active operations, stages and pending writes have separate capacity limits in ManagerConfig.
+`Read` checkpoints this ID's local writers and returns a Snapshot, including collection
+status. It never claims remote writers are complete. For a strict cross-process handoff,
+use `m.FlushID(ctx, id)` before publishing completion. Snapshot methods include
+`Summary()`, `RunningStages()` and `LatestFailedStage()`.
 
-At shutdown, stop and join producers, call `manager.Shutdown` with an independent bounded
-context, then close the database. The application owns migrations, connection pools and
-retention. See [storage and lifecycle](docs/timeline.md) and the
-[executable example](timeline/global_example_test.go).
-
-For isolated instances, use the same operations on an explicit Manager (`FlushID` selects
-one ID; `Flush` drains all local IDs). `For(id)` / `manager.New(id)` return independent writer
-handles; `timeline.New` creates a standalone writer with explicit flushing. The typed
-`BeginWithContext(ctx, tl, ...)` adapter also supports standalone and gospan handles.
-Global entry points return `ErrNoDefaultManager` until one is installed.
+At shutdown, stop producers, call `m.Shutdown` with an independent bounded context, then
+close the database. Use an explicit Manager's methods for isolation. `timeline.New`
+provides a standalone writer with explicit checkpoints; `timeline/gospan` provides a
+sealed process-local backend. See [the design](docs/timeline.md) and the
+[executable example](timeline/manager/global_example_test.go).
 
 ## License
 

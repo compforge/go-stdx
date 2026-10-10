@@ -8,14 +8,24 @@ Go stdlib 扩展库，长期对标 Java 里 Guava 的位置——项目手写 he
 
 子包镜像 stdlib 命名（`slicesx` / `stringsx` / `osx` / `ptrx` / `filepathx` / `tarx` / `shellx` / `randx` / `uuid`），调用点读起来像它扩展的那个标准库。一包一职责，包内保持小。
 
-`timeline` 提供 Stage 纯数据、StageHandle 计时接口与 Record 完整补录。
-Manager 索引本地活跃协调方和阶段，并管理后台提交与排空；Store 负责持久化与读取。
-业务通过操作 ID / 阶段名调用全局入口，Manager 查找对象后委派给 Recorder / StageHandle。
-协调方 Finish、阶段 End 后释放对应索引；未完成的并行阶段和待提交事实各自保留。
-多个进程通过同一操作 ID 汇总，活跃执行权不跨进程自动接管。`timeline/sqlstore` 复用调用方 SQL 连接池。
-`timeline/gospan` 提供进程内记录实现，Registry 仅索引本地活跃实例。
-ID 的生成、业务含义和完成决策归调用方，公共接口不暴露
-backend 类型。设计与完成边界见 `docs/timeline.md`。
+`timeline` 按 ID 聚合阶段事实，操作级 Start / Finish 可独立省略。
+
+```text
+timeline/
+├── recorder.go、writer.go     # 事实录制、计时与独立写入；不依赖 manager
+├── model/                    # 录制与存储共享的值类型、校验及快照编码
+├── manager/                  # 六个 ID 入口、TTL/LRU 缓存、后台提交与排空
+├── store/                    # Store 契约、文档编码/合并/投影与 MemoryStore
+│   └── sqlstore/             # 复用应用 SQL 连接池的持久化实现
+└── gospan/                   # 有封存边界的进程内实现
+```
+
+依赖方向为 `manager → timeline → store → model`，`sqlstore → store`。
+核心 Recorder 通过 Writer 契约提交事实；共享值类型通过 `timeline.Stage`、`timeline.Snapshot`
+等别名对外提供，存储包不依赖录制或管理生命周期。
+缓存使用 `jellydator/ttlcache/v3`；固定 TTL 与 LRU 决定本地生命周期，Finish 只记录结果。
+淘汰不能丢弃已接收的待提交事实，也不能推断业务完成或删除持久化历史。
+ID 的业务含义、执行调度与数据库保留期归应用。详细契约见 `docs/timeline.md`。
 
 ## 关键约定
 

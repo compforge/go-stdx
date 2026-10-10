@@ -16,7 +16,8 @@ import (
 	"time"
 
 	"github.com/compforge/go-stdx/timeline"
-	"github.com/compforge/go-stdx/timeline/sqlstore"
+	timelinestore "github.com/compforge/go-stdx/timeline/store"
+	"github.com/compforge/go-stdx/timeline/store/sqlstore"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -166,9 +167,9 @@ func TestSQLIdempotencyConflictAndIsolation(t *testing.T) {
 	db := open(t, filepath.Join(t.TempDir(), "documents.db"))
 	schema(t, db)
 	store := sqlstore.New(db)
-	operation := timeline.OperationRecord{Revision: 1, Operation: "start", StartedAt: time.Now().UTC(), Status: timeline.Running,
+	operation := timelinestore.OperationRecord{Revision: 1, Operation: "start", StartedAt: time.Now().UTC(), Status: timeline.Running,
 		Attributes: map[string]json.RawMessage{"data": json.RawMessage(`{"z":18446744073709551615,"a":1}`)}}
-	update := timeline.Update{Operation: &operation}
+	update := timelinestore.Update{Operation: &operation}
 	if err := store.Merge(ctx, "a", update); err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +183,7 @@ func TestSQLIdempotencyConflictAndIsolation(t *testing.T) {
 		t.Fatalf("duplicate advanced version: %d %v", version, err)
 	}
 	operation.Operation = "other"
-	if err := store.Merge(ctx, "a", update); !errors.Is(err, timeline.ErrConflict) {
+	if err := store.Merge(ctx, "a", update); !errors.Is(err, timelinestore.ErrConflict) {
 		t.Fatalf("conflict: %v", err)
 	}
 	if err := store.Merge(ctx, "b", update); err != nil {
@@ -197,7 +198,7 @@ func TestSQLIdempotencyConflictAndIsolation(t *testing.T) {
 	if _, err := store.Read(canceled, "a"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel: %v", err)
 	}
-	if _, err := store.Read(ctx, "missing"); !errors.Is(err, timeline.ErrNotFound) {
+	if _, err := store.Read(ctx, "missing"); !errors.Is(err, timelinestore.ErrNotFound) {
 		t.Fatalf("missing: %v", err)
 	}
 }
@@ -348,7 +349,7 @@ func TestSQLActorReferencesArePayloadLocal(t *testing.T) {
 	if err := tl.Record(conflicting); err != nil {
 		t.Fatal(err)
 	}
-	if err := tl.Flush(ctx); !errors.Is(err, timeline.ErrConflict) {
+	if err := tl.Flush(ctx); !errors.Is(err, timelinestore.ErrConflict) {
 		t.Fatalf("lost actor conflict: %v", err)
 	}
 }
