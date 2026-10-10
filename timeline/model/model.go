@@ -11,15 +11,15 @@ var ErrInvalidStage = errors.New("timeline: invalid stage")
 var ErrEmptyID = errors.New("timeline: ID must not be empty")
 var ErrInvalidAttribute = errors.New("timeline: attribute is not JSON serializable")
 
-// Actor optionally identifies the executor, not the requesting user.
-// The caller chooses the identity domain; ID and Name are independently optional.
+// Actor identifies the executor, not the requesting user.
+// At least one of ID and Name is required for new records. ID takes precedence.
 type Actor struct {
 	ID   string `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
 }
 
-// StageID is an opaque identity. Begin generates a UUID by default; callers
-// may supply a stable ID for a specific externally observed execution.
+// StageID identifies a logical stage. Begin generates a UUID by default; multiple
+// actors may contribute separate states under a caller-supplied shared ID.
 type StageID string
 
 type Status string
@@ -34,7 +34,7 @@ const (
 
 // Stage retains the interval and result of work or a wait. Leaf stages represent
 // one component's execution flow; parent stages may group parallel child stages.
-// ParentID refers to another stage or Snapshot.RootStageID. FinishedAt is zero
+// ParentID refers to a logical stage group or Snapshot.RootStageID. FinishedAt is zero
 // while work is running.
 type Stage struct {
 	ID         StageID                    `json:"id"`
@@ -60,7 +60,7 @@ func (s Stage) Duration(capturedAt time.Time) time.Duration {
 	return interval(s.StartedAt, s.FinishedAt, capturedAt)
 }
 
-// Snapshot is a detached view. Stages are ordered by start time, then ID;
+// Snapshot is a detached view. Stages are ordered by start time, ID, then actor;
 // overlapping intervals stay overlapping rather than being added together.
 // Collection describes the observations this reader can confirm. A successful
 // read does not prove all processes have flushed or that no late stage remains.

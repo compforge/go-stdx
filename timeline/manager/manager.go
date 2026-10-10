@@ -22,6 +22,7 @@ type Stats = cache.Stats
 type Manager struct {
 	cache *cache.Cache
 	store store.Store
+	actor Actor
 }
 
 // New starts a Manager. A nil backend selects NoopStore for cache-only recording.
@@ -33,11 +34,11 @@ func New(backend store.Store, config Config) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Manager{cache: c, store: backend}, nil
+	return &Manager{cache: c, store: backend, actor: config.Actor}, nil
 }
 
 // NewWriter creates an actor-scoped recorder. Its writes use the same cache;
-// recording may load Store on a miss. Keep each stage owned by one recorder.
+// recording may load Store on a miss. Actors may share logical stage IDs.
 func (m *Manager) NewWriter(id string, actor Actor) (*Handle, error) {
 	if m.cache.Closed() {
 		return nil, ErrClosed
@@ -47,7 +48,7 @@ func (m *Manager) NewWriter(id string, actor Actor) (*Handle, error) {
 func (m *Manager) apply(id string, fn func(*recorder, store.Document) error) error {
 	return m.cache.Update(context.Background(), id, func(doc store.Document) (store.Update, error) {
 		w := &captureWriter{}
-		r, err := restoreRecorder(doc, WithStore(m.store), withWriter(w))
+		r, err := restoreRecorder(doc, WithActor(m.actor), WithStore(m.store), withWriter(w))
 		if err != nil {
 			return store.Update{}, err
 		}

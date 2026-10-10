@@ -11,7 +11,7 @@ import (
 )
 
 func TestRootEntryPointsShareInstalledManager(t *testing.T) {
-	m, err := timeline.NewManager(nil, timeline.Config{FlushInterval: time.Hour})
+	m, err := timeline.NewManager(nil, timeline.Config{Actor: timeline.Actor{Name: "test"}, FlushInterval: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestRootEntryPointsShareInstalledManager(t *testing.T) {
 	if err := timeline.Finish("task", nil); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := timeline.Read(context.Background(), "task")
+	snapshot, err := timeline.Read(context.Background(), "task", false)
 	if err != nil || snapshot.Operation != "review" || snapshot.Status != timeline.Succeeded || len(snapshot.Stages) != 2 || snapshot.Collection.LocalFlushed || snapshot.Collection.StoreRead {
 		t.Fatalf("root entry points bypassed installed cache: %+v %v", snapshot, err)
 	}
@@ -48,12 +48,12 @@ func TestRootEntryPointsShareInstalledManager(t *testing.T) {
 	if err := timeline.End("stages-only", "work", nil); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err = manager.Read(context.Background(), "stages-only")
+	snapshot, err = manager.Read(context.Background(), "stages-only", false)
 	if err != nil || snapshot.Status != timeline.Unknown || len(snapshot.Stages) != 1 || snapshot.Stages[0].Status != timeline.Succeeded {
 		t.Fatalf("optional operation boundaries required: %+v %v", snapshot, err)
 	}
 	timeline.SetDefault(nil)
-	if _, err := timeline.Read(context.Background(), "task"); !errors.Is(err, timeline.ErrNoDefault) {
+	if _, err := timeline.Read(context.Background(), "task", false); !errors.Is(err, timeline.ErrNoDefault) {
 		t.Fatalf("root entry point ignored default replacement: %v", err)
 	}
 }

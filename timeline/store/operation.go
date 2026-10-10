@@ -2,42 +2,33 @@ package store
 
 import "github.com/compforge/go-stdx/timeline/model"
 
-// mergeOperation merges independently optional boundaries. A finish-only writer
-// must not erase a start, and an older late start must not reopen a finished root.
-// Revisions order the start writer's attributes; boundary identity is independent
-// of revision so another process may contribute the missing operation boundary.
-func mergeOperation(old, incoming OperationRecord) (OperationRecord, bool, error) {
-	hasStart, hasFinish := !incoming.StartedAt.IsZero(), !incoming.FinishedAt.IsZero()
-	if incoming.Revision == 0 || (!hasStart && !hasFinish) {
+// Boundaries are independently optional. A last accepted boundary replaces the
+// corresponding value, without clearing the other boundary or consulting a
+// process-local revision. The result is an observation, not business arbitration.
+func mergeOperation(old, in OperationRecord) (OperationRecord, bool, error) {
+	start, finish := !in.StartedAt.IsZero(), !in.FinishedAt.IsZero()
+	if !start && !finish {
 		return old, false, ErrConflict
 	}
 	next := old
-	if hasStart {
-		if !old.StartedAt.IsZero() {
-			if old.Operation != incoming.Operation || !old.StartedAt.Equal(incoming.StartedAt) {
-				return old, false, ErrConflict
-			}
-			if incoming.Revision == old.Revision && !model.SameJSON(old.Attributes, incoming.Attributes) {
-				return old, false, ErrConflict
-			}
-		}
-		if old.StartedAt.IsZero() || incoming.Revision > old.Revision {
-			next.Operation, next.StartedAt = incoming.Operation, incoming.StartedAt
-			next.Attributes = model.CloneJSONAttributes(incoming.Attributes)
-		}
+	if start {
+		next.Operation, next.StartedAt = in.Operation, in.StartedAt
+		next.Attributes = model.CloneJSONAttributes(in.Attributes)
 	}
-	if hasFinish {
-		if incoming.Status != model.Succeeded && incoming.Status != model.Failed && incoming.Status != model.Canceled {
+	if finish {
+		if in.Status != model.Succeeded && in.Status != model.Failed && in.Status != model.Canceled {
 			return old, false, ErrConflict
 		}
-		if !old.FinishedAt.IsZero() && (!old.FinishedAt.Equal(incoming.FinishedAt) || old.Status != incoming.Status || old.Error != incoming.Error) {
-			return old, false, ErrConflict
-		}
-		next.FinishedAt, next.Status, next.Error = incoming.FinishedAt, incoming.Status, incoming.Error
+		next.FinishedAt, next.Status, next.Error = in.FinishedAt, in.Status, in.Error
 	}
 	if next.FinishedAt.IsZero() {
 		next.Status = model.Unknown
 	}
-	next.Revision = max(old.Revision, incoming.Revision)
-	return next, !model.SameJSON(old, next), nil
+	// Repeated identical facts must not update database timestamps due to a
+	// writer's private sequence number alone.
+	if model.SameJSON(old, next) {
+		return old, false, nil
+	}
+	next.Revision = in.Revision
+	return next, true, nil
 }

@@ -26,6 +26,12 @@ func (s *managedStore) Merge(ctx context.Context, id string, u timelinestore.Upd
 
 func newManager(t *testing.T, store timelinestore.Store, config managed.Config) *managed.Manager {
 	t.Helper()
+	if config.Actor.Key() == "" {
+		config.Actor = timeline.Actor{Name: "test"}
+	}
+	if config.LoadInterval == 0 {
+		config.LoadInterval = time.Hour
+	}
 	if config.FlushInterval == 0 {
 		config.FlushInterval = 5 * time.Millisecond
 	}
@@ -49,7 +55,7 @@ func newManager(t *testing.T, store timelinestore.Store, config managed.Config) 
 
 func managedHandle(t *testing.T, m *managed.Manager, id, actor string) *timeline.Handle {
 	t.Helper()
-	r, err := m.NewWriter(id, timeline.Actor{ID: actor})
+	r, err := m.NewWriter(id, timeline.Actor{ID: actor, Name: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +85,7 @@ func waitSignal(t *testing.T, ch <-chan struct{}) {
 
 func TestManagerPersistsRunningAndFinalStagesWithoutFlush(t *testing.T) {
 	store := timelinestore.NewMemoryStore()
-	m := newManager(t, store, managed.Config{})
+	m := newManager(t, store, managed.Config{Actor: managed.Actor{Name: "test"}})
 	r := managedHandle(t, m, "operation", "worker")
 	s := r.Begin("initialize")
 	eventually(t, func() bool {
@@ -112,7 +118,7 @@ func TestManagerRetriesWithoutAnotherNotification(t *testing.T) {
 		}
 		return store.MemoryStore.Merge(ctx, id, u)
 	}
-	m := newManager(t, store, managed.Config{OnError: func(string, error) { reported.Add(1) }})
+	m := newManager(t, store, managed.Config{Actor: managed.Actor{Name: "test"}, OnError: func(string, error) { reported.Add(1) }})
 	// No subsequent mutation or explicit flush is needed to retry.
 	managedHandle(t, m, "retry", "worker").Begin("work").End(nil)
 	eventually(t, func() bool {
@@ -149,7 +155,7 @@ func TestManagerRetriesIdenticalBatchThenPersistsConcurrentEnd(t *testing.T) {
 		}
 		return store.MemoryStore.Merge(ctx, id, u)
 	}
-	m := newManager(t, store, managed.Config{ExportTimeout: time.Second})
+	m := newManager(t, store, managed.Config{Actor: managed.Actor{Name: "test"}, ExportTimeout: time.Second})
 	r := managedHandle(t, m, "concurrent", "worker")
 	s := r.Begin("work")
 	waitSignal(t, entered)
@@ -174,7 +180,7 @@ func TestManagerRetriesIdenticalBatchThenPersistsConcurrentEnd(t *testing.T) {
 
 func TestManagerSharedIDKeepsWriterActors(t *testing.T) {
 	store := timelinestore.NewMemoryStore()
-	m := newManager(t, store, managed.Config{})
+	m := newManager(t, store, managed.Config{Actor: managed.Actor{Name: "test"}})
 	owner := managedHandle(t, m, "shared", "owner")
 	if err := owner.Start(context.Background(), "task"); err != nil {
 		t.Fatal(err)
@@ -218,7 +224,7 @@ func TestManagerTimeoutDoesNotStarveHealthyHandle(t *testing.T) {
 		}
 		return store.MemoryStore.Merge(ctx, id, u)
 	}
-	m := newManager(t, store, managed.Config{ExportTimeout: 20 * time.Millisecond})
+	m := newManager(t, store, managed.Config{Actor: managed.Actor{Name: "test"}, ExportTimeout: 20 * time.Millisecond})
 	managedHandle(t, m, "stalled", "").Begin("work")
 	waitSignal(t, entered)
 	managedHandle(t, m, "healthy", "").Begin("work").End(nil)
@@ -240,7 +246,7 @@ func TestManagerShutdownCancelsWorkerAndDrains(t *testing.T) {
 		}
 		return store.MemoryStore.Merge(ctx, id, u)
 	}
-	m := newManager(t, store, managed.Config{ExportTimeout: time.Minute})
+	m := newManager(t, store, managed.Config{Actor: managed.Actor{Name: "test"}, ExportTimeout: time.Minute})
 	r := managedHandle(t, m, "shutdown", "worker")
 	s := r.Begin("work")
 	waitSignal(t, entered)
@@ -267,7 +273,7 @@ func TestManagerFailedFinalDrainReleasesBuffers(t *testing.T) {
 	backend := &managedStore{MemoryStore: timelinestore.NewMemoryStore()}
 	unavailable := errors.New("offline")
 	backend.merge = func(context.Context, string, timelinestore.Update) error { return unavailable }
-	m := newManager(t, backend, managed.Config{FlushInterval: time.Hour})
+	m := newManager(t, backend, managed.Config{Actor: managed.Actor{Name: "test"}, FlushInterval: time.Hour})
 	if _, err := m.Begin("task", "work"); err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +301,7 @@ func TestManagerBoundsBuffersAndCoalescesUnsentUpdates(t *testing.T) {
 			return ctx.Err()
 		}
 	}
-	m := newManager(t, store, managed.Config{
+	m := newManager(t, store, managed.Config{Actor: managed.Actor{Name: "test"},
 		MaxPendingTimelines: 1, MaxPendingUpdates: 2, ExportTimeout: time.Second,
 	})
 	r := managedHandle(t, m, "bounded", "")
@@ -325,12 +331,12 @@ func TestManagerBoundsBuffersAndCoalescesUnsentUpdates(t *testing.T) {
 	}
 }
 
-func TestManagerRecordImportAndConflict(t *testing.T) {
+func TestManagerRecordImportAndOverwrite(t *testing.T) {
 	store := timelinestore.NewMemoryStore()
-	m := newManager(t, store, managed.Config{})
+	m := newManager(t, store, managed.Config{Actor: managed.Actor{Name: "test"}})
 	r := managedHandle(t, m, "import", "")
 	now := time.Now()
-	s := timeline.Stage{ID: "external", Name: "external", StartedAt: now, FinishedAt: now, Status: timeline.Succeeded}
+	s := timeline.Stage{Actor: timeline.Actor{Name: "test"}, ID: "external", Name: "external", StartedAt: now, FinishedAt: now, Status: timeline.Succeeded}
 	if err := r.Record(s); err != nil {
 		t.Fatal(err)
 	}
@@ -339,14 +345,14 @@ func TestManagerRecordImportAndConflict(t *testing.T) {
 		return len(d.Stages) == 1 && d.Stages[0].Status == timeline.Succeeded
 	})
 	s.Name = "conflicting-name"
-	if err := r.Record(s); !errors.Is(err, timelinestore.ErrConflict) {
+	if err := r.Record(s); err != nil {
 		t.Fatalf("conflict lost: %v", err)
 	}
 }
 
 func TestManagerConcurrentFlushAndHandleReuse(t *testing.T) {
 	store := timelinestore.NewMemoryStore()
-	m := newManager(t, store, managed.Config{})
+	m := newManager(t, store, managed.Config{Actor: managed.Actor{Name: "test"}})
 	r := managedHandle(t, m, "reused", "")
 	stop := make(chan struct{})
 	var wg sync.WaitGroup

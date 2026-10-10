@@ -42,12 +42,12 @@ func Record(id string, stage Stage) error {
 	}
 	return m.Record(id, stage)
 }
-func Read(ctx context.Context, id string) (Snapshot, error) {
+func Read(ctx context.Context, id string, fresh bool) (Snapshot, error) {
 	m, err := current()
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return m.Read(ctx, id)
+	return m.Read(ctx, id, fresh)
 }
 func Start(id, operation string, attributes ...Attribute) error {
 	m, err := current()

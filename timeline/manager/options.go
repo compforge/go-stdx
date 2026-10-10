@@ -25,6 +25,10 @@ func WithStartTime(at time.Time) StageOption {
 func WithStageActor(actor Actor) StageOption {
 	return func(s *Stage) error { s.Actor = actor; return nil }
 }
+
+// WithEndActor selects the actor for a named End; it cannot change a handle identity.
+func WithEndActor(actor Actor) EndOption { return func(s *Stage) error { s.Actor = actor; return nil } }
+
 func WithEndTime(at time.Time) EndOption {
 	return func(s *Stage) error { s.FinishedAt = at; return nil }
 }

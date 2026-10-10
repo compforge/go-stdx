@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/compforge/go-stdx/timeline/model"
 	"github.com/compforge/go-stdx/timeline/store"
@@ -13,7 +12,7 @@ import (
 func (c *Cache) entries(id string) []*entry {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	result := make([]*entry, 0, len(c.pending))
+	var result []*entry
 	for e := range c.pending {
 		if id == "" || e.id == id {
 			result = append(result, e)
@@ -24,9 +23,10 @@ func (c *Cache) entries(id string) []*entry {
 func permanent(err error) bool {
 	return errors.Is(err, store.ErrConflict) || errors.Is(err, model.ErrInvalidStage) || errors.Is(err, model.ErrInvalidAttribute)
 }
+func (e *entry) notify() { close(e.changed); e.changed = make(chan struct{}) }
 
-// save freezes each submitted batch until its outcome is known. Later writes
-// stay separate: an ambiguous failure may already have committed in Store.
+// save submits one frozen batch. Local sequence numbers only acknowledge Flush
+// checkpoints; they are never sent to Store as a cross-process ordering claim.
 func (c *Cache) save(ctx context.Context, e *entry) (result error) {
 	report := false
 	defer func() {
@@ -44,91 +44,69 @@ func (c *Cache) save(ctx context.Context, e *entry) (result error) {
 		return err
 	}
 	e.mu.Lock()
-	remaining := e.batchCount + len(e.updates)
-	e.mu.Unlock()
-	for remaining > 0 {
-		e.mu.Lock()
-		if e.batch == nil {
-			count := min(remaining, len(e.updates))
-			batch, err := store.CoalesceUpdates(e.updates[:count])
-			if err != nil {
-				e.mu.Unlock()
-				return err
-			}
-			e.batch = &batch
-			e.batchCount = count
-			e.updates = append([]store.Update(nil), e.updates[count:]...)
-		}
-		batch, count := *e.batch, e.batchCount
-		e.mu.Unlock()
-		saveCtx, cancel := context.WithTimeout(ctx, c.config.ExportTimeout)
-		err := c.store.Merge(saveCtx, e.id, batch)
-		cancel()
-		e.mu.Lock()
-		// A shutdown cancellation is followed by a caller-scoped drain. It is not
-		// the final eviction attempt and must not discard the pending batch.
-		final := e.evicted && ctx.Err() == nil
-		report = err != nil && (e.err == nil || final) && ctx.Err() == nil
-		e.err = err
-		if err == nil || permanent(err) || final {
-			e.batch = nil
-			e.batchCount = 0
-			if err != nil {
-				e.lost = true
-				e.lossErr = err
-				if permanent(err) {
-					c.rejected.Add(uint64(count))
-				} else {
-					c.dropped.Add(uint64(count))
-				}
-				if final {
-					c.dropped.Add(uint64(len(e.updates)))
-					e.updates = nil
-				}
-			}
-			if len(e.updates) == 0 {
-				c.mu.Lock()
-				delete(c.pending, e)
-				c.mu.Unlock()
-			}
-		}
-		e.mu.Unlock()
+	if e.batch == nil && len(e.updates) > 0 {
+		batch, err := store.CoalesceUpdates(e.updates)
 		if err != nil {
+			e.mu.Unlock()
 			return err
 		}
-		remaining -= count
+		e.batch = &batch
+		e.batchCount = len(e.updates)
+		e.batchSeq = e.accepted
+		e.updates = nil
 	}
+	if e.batch == nil {
+		err := e.lossErr
+		e.mu.Unlock()
+		return err
+	}
+	batch, count, seq := *e.batch, e.batchCount, e.batchSeq
+	e.mu.Unlock()
+	saveCtx, cancel := context.WithTimeout(ctx, c.config.ExportTimeout)
+	err := c.store.Merge(saveCtx, e.id, batch)
+	cancel()
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.lossErr
-}
-
-func (c *Cache) run() {
-	defer close(c.done)
-	ticker := time.NewTicker(c.config.FlushInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		case <-ticker.C:
-		case <-c.wake:
-		}
-		for _, e := range c.entries("") {
-			if c.ctx.Err() != nil {
-				return
+	final := e.evicted && ctx.Err() == nil
+	report = err != nil && (e.err == nil || final) && ctx.Err() == nil
+	e.err = err
+	e.attempts++
+	if err == nil || permanent(err) || final {
+		e.batch = nil
+		e.batchCount = 0
+		if err == nil {
+			e.saved = seq
+		} else {
+			e.lost = true
+			e.lossErr = err
+			if permanent(err) {
+				c.rejected.Add(uint64(count))
+			} else {
+				c.dropped.Add(uint64(count))
 			}
-			_ = c.save(c.ctx, e)
+			if final {
+				c.dropped.Add(uint64(len(e.updates)))
+				e.updates = nil
+			}
+		}
+		if len(e.updates) == 0 {
+			c.mu.Lock()
+			delete(c.pending, e)
+			c.mu.Unlock()
 		}
 	}
+	pending := e.batch != nil || len(e.updates) > 0
+	e.notify()
+	e.mu.Unlock()
+	// More accepted writes may have arrived during IO. Save them in a later
+	// bounded batch; failures wait for the periodic retry instead of hot spinning.
+	if pending && err == nil {
+		c.requestSave(e.id)
+	}
+	return err
 }
 
-// Flush checkpoints currently pending local facts for id when wait is true.
-// With wait=false it wakes the shared save worker and returns without waiting
-// for Store IO; failures are reported through OnError. The worker may also save
-// other pending IDs. Neither mode discovers other processes' writes or promises
-// delivery of facts previously dropped.
-// +spec=`Nonblocking Flush coalesces worker wakeups; accepted saves use the Manager lifetime and IO timeout independently of the caller context.`
+// Flush triggers the save worker. Waiting captures only records accepted before
+// this call; caller cancellation never cancels the shared Store submission.
 func (c *Cache) Flush(ctx context.Context, id string, wait bool) error {
 	if id == "" {
 		return model.ErrEmptyID
@@ -136,49 +114,96 @@ func (c *Cache) Flush(ctx context.Context, id string, wait bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !wait {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		if c.closed {
-			return ErrClosed
-		}
-		select {
-		case c.wake <- struct{}{}:
-		default:
-		}
-		return nil
+	if c.Closed() {
+		return ErrClosed
 	}
-	err := c.flush(ctx, id)
-	if item := c.items.Get(id); item != nil {
-		e := item.Value()
-		e.mu.Lock()
-		err = errors.Join(err, e.lossErr)
-		e.mu.Unlock()
+	if !c.background {
+		return c.flush(ctx, id)
 	}
-	return err
+	type checkpoint struct {
+		e            *entry
+		seq, attempt uint64
+	}
+	var points []checkpoint
+	if wait {
+		for _, e := range c.entries(id) {
+			e.mu.Lock()
+			points = append(points, checkpoint{e, e.accepted, e.attempts})
+			e.mu.Unlock()
+		}
+	}
+	c.requestSave(id)
+	for _, p := range points {
+		for {
+			p.e.mu.Lock()
+			err := p.e.lossErr
+			if err == nil && p.e.attempts > p.attempt && p.e.err != nil {
+				err = p.e.err
+			}
+			done := p.e.saved >= p.seq
+			changed := p.e.changed
+			p.e.mu.Unlock()
+			if done {
+				break
+			}
+			if err != nil {
+				return err
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-c.ctx.Done():
+				return ErrClosed
+			case <-changed:
+			}
+		}
+	}
+	if wait {
+		if item := c.peek(id); item != nil {
+			e := item.Value()
+			e.mu.Lock()
+			err := e.lossErr
+			e.mu.Unlock()
+			return err
+		}
+	}
+	return nil
 }
+
+// Explicit standalone checkpoints and final shutdown drain may exceed one batch,
+// but retain the same serial IO and per-call timeout as the worker.
 func (c *Cache) flush(ctx context.Context, id string) error {
 	var result error
 	for _, e := range c.entries(id) {
-		if err := c.save(ctx, e); err != nil {
-			result = errors.Join(result, fmt.Errorf("timeline %s: %w", e.id, err))
+		for {
+			if err := c.save(ctx, e); err != nil {
+				result = errors.Join(result, fmt.Errorf("timeline %s: %w", e.id, err))
+				break
+			}
+			e.mu.Lock()
+			pending := e.batch != nil || len(e.updates) > 0
+			e.mu.Unlock()
+			if !pending {
+				break
+			}
 		}
 	}
 	return errors.Join(result, ctx.Err())
 }
 
-// Shutdown stops loading/writing, cancels background IO, then attempts to drain
-// with the caller's context. Failed final saves are counted and released. Reads
-// remain available directly from Store while the application keeps it open.
+// Shutdown stops both workers, then attempts a caller-scoped final drain. Store
+// connections remain owned by the application. Failed buffers are released.
 func (c *Cache) Shutdown(ctx context.Context) error {
 	c.mu.Lock()
 	c.closed = true
 	c.cancel()
 	c.mu.Unlock()
-	select {
-	case <-c.done:
-	case <-ctx.Done():
-		return ctx.Err()
+	for _, done := range []chan struct{}{c.done, c.loadDone} {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	c.shutdownMu.Lock()
 	defer c.shutdownMu.Unlock()
@@ -190,6 +215,7 @@ func (c *Cache) Shutdown(ctx context.Context) error {
 		e.batch = nil
 		e.batchCount = 0
 		e.updates = nil
+		e.notify()
 		e.mu.Unlock()
 	}
 	c.mu.Lock()
@@ -199,8 +225,6 @@ func (c *Cache) Shutdown(ctx context.Context) error {
 	return err
 }
 
-// Stats reports process-local cache and save-buffer health. Counts do not
-// describe durable completeness across processes.
 type Stats struct {
 	CachedTimelines  int
 	PendingTimelines int

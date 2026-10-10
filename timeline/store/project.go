@@ -30,7 +30,10 @@ func sortStages(stages []model.Stage) {
 		if order := a.StartedAt.Compare(b.StartedAt); order != 0 {
 			return order
 		}
-		return cmp.Compare(a.ID, b.ID)
+		if order := cmp.Compare(a.ID, b.ID); order != 0 {
+			return order
+		}
+		return cmp.Compare(a.Actor.Key(), b.Actor.Key())
 	})
 
 }
@@ -40,6 +43,9 @@ func sortStageUpdates(stages []StageUpdate) {
 		if order := a.StartedAt.Compare(b.StartedAt); order != 0 {
 			return order
 		}
-		return cmp.Compare(a.ID, b.ID)
+		if order := cmp.Compare(a.ID, b.ID); order != 0 {
+			return order
+		}
+		return cmp.Compare(a.Actor.Key(), b.Actor.Key())
 	})
 }

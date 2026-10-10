@@ -24,7 +24,7 @@ func TestFlushWithoutWaitWakesWorkerAndOutlivesCaller(t *testing.T) {
 			return ctx.Err()
 		}
 	}
-	m := newManager(t, backend, managed.Config{FlushInterval: time.Hour, ExportTimeout: 3 * time.Second})
+	m := newManager(t, backend, managed.Config{Actor: managed.Actor{Name: "test"}, FlushInterval: time.Hour, ExportTimeout: 3 * time.Second})
 	releaseSave := sync.OnceFunc(func() { close(release) })
 	defer releaseSave()
 	if _, err := m.Begin("task", "work"); err != nil {
@@ -71,7 +71,7 @@ func TestFlushWaitsForRequestedID(t *testing.T) {
 			return ctx.Err()
 		}
 	}
-	m := newManager(t, backend, managed.Config{FlushInterval: time.Hour, ExportTimeout: 3 * time.Second})
+	m := newManager(t, backend, managed.Config{Actor: managed.Actor{Name: "test"}, FlushInterval: time.Hour, ExportTimeout: 3 * time.Second})
 	releaseSave := sync.OnceFunc(func() { close(release) })
 	defer releaseSave()
 	for _, id := range []string{"task", "other"} {
@@ -103,7 +103,7 @@ func TestFlushWithoutWaitReportsSaveFailure(t *testing.T) {
 	backend := &managedStore{MemoryStore: timelinestore.NewMemoryStore()}
 	backend.merge = func(context.Context, string, timelinestore.Update) error { return failure }
 	reported := make(chan error, 1)
-	m := newManager(t, backend, managed.Config{FlushInterval: time.Hour, OnError: func(id string, err error) {
+	m := newManager(t, backend, managed.Config{Actor: managed.Actor{Name: "test"}, FlushInterval: time.Hour, OnError: func(id string, err error) {
 		if id != "task" {
 			t.Errorf("reported ID %q", id)
 		}
@@ -127,7 +127,7 @@ func TestFlushWithoutWaitReportsSaveFailure(t *testing.T) {
 
 func TestNoopStoreKeepsFactsInManagerCache(t *testing.T) {
 	for _, backend := range []timelinestore.Store{nil, timelinestore.NewNoopStore()} {
-		m := newManager(t, backend, managed.Config{FlushInterval: time.Hour})
+		m := newManager(t, backend, managed.Config{Actor: managed.Actor{Name: "test"}, FlushInterval: time.Hour})
 		writer := managedHandle(t, m, "task", "worker")
 		stage := writer.Begin("work")
 		if err := stage.End(nil); err != nil {
@@ -138,7 +138,7 @@ func TestNoopStoreKeepsFactsInManagerCache(t *testing.T) {
 			t.Fatalf("writer bypassed recording cache: %+v %v", snapshot, err)
 		}
 		m.Evict("task")
-		if _, err := m.Read(context.Background(), "task"); !errors.Is(err, timelinestore.ErrNotFound) {
+		if _, err := m.Read(context.Background(), "task", false); !errors.Is(err, timelinestore.ErrNotFound) {
 			t.Fatalf("NoopStore recovered evicted facts: %v", err)
 		}
 	}

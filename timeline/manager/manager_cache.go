@@ -4,10 +4,10 @@ import (
 	"context"
 )
 
-// Read returns the current cached view, loading Store on a miss. It does not save
-// pending facts or refresh a warm cache from another process.
-func (m *Manager) Read(ctx context.Context, id string) (Snapshot, error) {
-	return m.cache.Read(ctx, id)
+// Read returns the cached view or, with fresh=true, waits for a Store refresh.
+// Both paths preserve pending local updates and never implicitly flush.
+func (m *Manager) Read(ctx context.Context, id string, fresh bool) (Snapshot, error) {
+	return m.cache.Read(ctx, id, fresh)
 }
 
 // Evict releases a cached document and schedules a final best-effort save.
@@ -20,7 +20,7 @@ func (m *Manager) Evict(id string) { m.cache.Evict(id) }
 // use Shutdown to drain pending facts when stopping the application.
 //
 // Flush waits for the ID's pending Store submissions when wait is true. With
-// wait=false it coalesces a wakeup of the shared save worker and returns immediately;
+// wait=false it queues the ID for the bounded save worker and returns immediately;
 // save failures are reported through Config.OnError. The worker may save other IDs.
 // +spec=`Nonblocking Flush uses the Manager lifetime and IO timeout independently of the caller context.`
 func (m *Manager) Flush(ctx context.Context, id string, wait bool) error {

@@ -9,7 +9,7 @@ import (
 )
 
 func Example() {
-	m, err := manager.New(timelinestore.NewMemoryStore(), manager.Config{MaxTimelines: 1024})
+	m, err := manager.New(timelinestore.NewMemoryStore(), manager.Config{Actor: manager.Actor{Name: "test"}, MaxTimelines: 1024})
 	if err != nil {
 		panic(err)
 	}
@@ -24,7 +24,7 @@ func Example() {
 	if err := manager.End("task-42", "prepare_files", nil); err != nil {
 		panic(err)
 	}
-	snapshot, err := manager.Read(context.Background(), "task-42")
+	snapshot, err := manager.Read(context.Background(), "task-42", false)
 	if err != nil {
 		panic(err)
 	}

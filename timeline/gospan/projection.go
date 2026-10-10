@@ -11,6 +11,7 @@ import (
 
 	"github.com/akmadian/gospan"
 	"github.com/compforge/go-stdx/timeline"
+	"github.com/compforge/go-stdx/timeline/model"
 	"github.com/google/uuid"
 )
 
@@ -30,15 +31,15 @@ type projection struct {
 	id         string // immutable even before the root event is collected
 	mu         sync.Mutex
 	rootID     timeline.StageID
-	records    map[timeline.StageID]*timeline.Stage
+	records    map[model.StageKey]*timeline.Stage
 	identities map[int64]timeline.StageID
-	boundaries map[timeline.StageID]timeline.Stage
+	boundaries map[int64]timeline.Stage
 	sequence   uint64
 	changed    chan struct{}
 }
 
 func newProjection(id string) *projection {
-	return &projection{prefix: uuid.NewString(), id: id, rootID: timeline.StageID("operation:" + id), identities: make(map[int64]timeline.StageID), boundaries: make(map[timeline.StageID]timeline.Stage), records: make(map[timeline.StageID]*timeline.Stage), changed: make(chan struct{})}
+	return &projection{prefix: uuid.NewString(), id: id, rootID: timeline.StageID("operation:" + id), identities: make(map[int64]timeline.StageID), boundaries: make(map[int64]timeline.Stage), records: make(map[model.StageKey]*timeline.Stage), changed: make(chan struct{})}
 }
 
 func (p *projection) WriteBatch(batch gospan.Batch) error {
@@ -51,14 +52,15 @@ func (p *projection) WriteBatch(batch gospan.Batch) error {
 		for _, attr := range event.Attrs {
 			if marker, ok := attr.Value.Any().(boundary); attr.Key == boundaryKey && ok {
 				p.identities[event.SpanID] = marker.data.ID
-				p.boundaries[marker.data.ID] = marker.data
+				p.boundaries[event.SpanID] = marker.data
 			}
 		}
 		id := p.stageID(event.SpanID)
-		record := p.records[id]
+		key := model.StageKey{ID: id, Actor: p.boundaries[event.SpanID].Actor.Key()}
+		record := p.records[key]
 		if record == nil {
 			record = &timeline.Stage{ID: id, Status: timeline.Running}
-			p.records[id] = record
+			p.records[key] = record
 		}
 		switch event.Kind {
 		case gospan.EventStart:
@@ -97,7 +99,7 @@ func (p *projection) WriteBatch(batch gospan.Batch) error {
 			}
 			record.Attributes[attr.Key] = value.value
 		}
-		if data, ok := p.boundaries[id]; ok {
+		if data, ok := p.boundaries[event.SpanID]; ok {
 			record.ParentID, record.Actor, record.StartedAt = data.ParentID, data.Actor, data.StartedAt
 			if !data.FinishedAt.IsZero() {
 				record.FinishedAt, record.Elapsed = data.FinishedAt, data.Elapsed
@@ -136,7 +138,7 @@ func (p *projection) snapshot(complete bool) timeline.Snapshot {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	result := timeline.Snapshot{ID: p.id, RootStageID: p.rootID, CapturedAt: time.Now().UTC(), Collection: timeline.Collection{LocalFlushed: complete, StoreRead: complete}}
-	if root := p.records[p.rootID]; root != nil {
+	if root := p.records[model.StageKey{ID: p.rootID}]; root != nil {
 		result.RootStageID, result.Operation = root.ID, root.Name
 		result.StartedAt, result.FinishedAt = root.StartedAt, root.FinishedAt
 		result.Status, result.Error = root.Status, root.Error
@@ -146,7 +148,7 @@ func (p *projection) snapshot(complete bool) timeline.Snapshot {
 		}
 	}
 	for id, record := range p.records {
-		if id == p.rootID {
+		if id.ID == p.rootID {
 			continue
 		}
 		stage := *record
@@ -157,7 +159,10 @@ func (p *projection) snapshot(complete bool) timeline.Snapshot {
 		if order := a.StartedAt.Compare(b.StartedAt); order != 0 {
 			return order
 		}
-		return cmp.Compare(a.ID, b.ID)
+		if n := cmp.Compare(a.ID, b.ID); n != 0 {
+			return n
+		}
+		return cmp.Compare(a.Actor.Key(), b.Actor.Key())
 	})
 	return result
 }

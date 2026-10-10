@@ -1,6 +1,9 @@
 package store
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // NoopStore accepts submissions without retaining facts. Reads return ErrNotFound;
 // the recording cache is the only document owner and eviction cannot be recovered.
@@ -15,4 +18,9 @@ func (*NoopStore) Read(ctx context.Context, _ string) (Document, error) {
 		return Document{}, err
 	}
 	return Document{}, ErrNotFound
+}
+
+func (*NoopStore) MGet(ctx context.Context, _ []string) ([]Document, error) { return nil, ctx.Err() }
+func (*NoopStore) Latest(ctx context.Context, _ time.Time, _ int) ([]Document, error) {
+	return nil, ctx.Err()
 }

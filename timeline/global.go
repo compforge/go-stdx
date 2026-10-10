@@ -18,8 +18,10 @@ func Begin(id, name string, options ...StageOption) (StageHandle, error) {
 func End(id, name string, err error, options ...EndOption) error {
 	return manager.End(id, name, err, options...)
 }
-func Record(id string, stage Stage) error                   { return manager.Record(id, stage) }
-func Read(ctx context.Context, id string) (Snapshot, error) { return manager.Read(ctx, id) }
+func Record(id string, stage Stage) error { return manager.Record(id, stage) }
+func Read(ctx context.Context, id string, fresh bool) (Snapshot, error) {
+	return manager.Read(ctx, id, fresh)
+}
 func Start(id, operation string, attributes ...Attribute) error {
 	return manager.Start(id, operation, attributes...)
 }

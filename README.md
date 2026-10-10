@@ -20,7 +20,7 @@ Subpackages mirror stdlib naming so call sites read like the standard library th
 | `netx` | `IsDNSHostname` — ASCII DNS hostname syntax without IP literals | `net` parses IP addresses but does not export hostname validation |
 | `randx` | `Hex(n)` — n random bytes as lowercase hex | the "short random id" helper every daemon re-writes |
 | `uuid` | `New`, `NewWithPrefix`, `V4`, `V7`, `V7Hex` — resource / random / time-ordered ids | thin wrappers over `google/uuid` for the resource ID, string, and dashless-hex shapes services keep re-wrapping |
-| `timeline` | operation/stage interfaces and detached, structured snapshots | joins stages from independent processes by business ID; snapshots retain intervals, hierarchy, optional actors and results |
+| `timeline` | operation/stage interfaces and detached, structured snapshots | joins stages from independent processes by business ID; snapshots retain intervals, hierarchy, actors and results |
 
 Rules of the house:
 
@@ -59,7 +59,9 @@ import (
 
 // Configure once per process using the application's existing *sql.DB.
 m, err := timeline.NewManager(sqlstore.New(db), timeline.Config{
+    Actor: timeline.Actor{Name: podName},
     MaxTimelines: 1024,
+    BatchLimit: 64,
 })
 if err != nil {
     return err
@@ -67,16 +69,14 @@ if err != nil {
 timeline.SetDefault(m)
 
 // Neither Start nor Finish is required.
-if _, err := timeline.Begin(operationID, "acquire_carrier",
-    timeline.WithStageActor(timeline.Actor{Name: podName}),
-); err != nil {
+if _, err := timeline.Begin(operationID, "acquire_carrier"); err != nil {
     return err
 }
 workErr := acquireCarrier(ctx)
 if err := timeline.End(operationID, "acquire_carrier", workErr); err != nil {
     return err
 }
-snapshot, recordingErr := timeline.Read(ctx, operationID)
+snapshot, recordingErr := timeline.Read(ctx, operationID, false)
 // json.Marshal(snapshot) serializes the detached view.
 ```
 
@@ -91,7 +91,9 @@ NoopStore retains no documents; facts are lost when their cached copy is evicted
 Applications own exporting snapshots to files or other formats.
 
 Manager serves reads and writes from memory, loading Store on a cache miss and
-creating missing timelines for writes. It saves changes in the background, so
+creating missing timelines for writes. Its two workers save pending batches and load peer updates through the shared Store.
+One `BatchLimit` bounds each save batch, MGet and Latest query. Both workers accept
+ID notifications for earlier processing. It saves changes in the background, so
 long-running applications normally do not need to call `Flush`.
 At capacity, LRU eviction releases cached copies; persisted stages can be restored and
 continued through their existing handles. Eviction does not finish a timeline.
@@ -101,6 +103,10 @@ can be lost if final saving fails. `Read` returns the current view without waiti
 for persistence. Use `m.Flush(ctx, id, true)` for an explicit persistence checkpoint,
 or `m.Flush(ctx, id, false)` to wake the background save worker and return immediately;
 use Store directly when each operation must observe or update durable state.
+Use `Read(ctx, id, true)` to refresh from Store while retaining local pending changes.
+Stage identity is `(StageID, Actor)`: ID takes precedence over Name, and at least one
+actor field must be present. Different actors retain separate records; competing
+writes for the same actor use last accepted state, without a consistency guarantee.
 Snapshot methods include `Summary()`, `RunningStages()` and `LatestFailedStage()`.
 
 At shutdown, stop producers, call `m.Shutdown` with an independent bounded context, then

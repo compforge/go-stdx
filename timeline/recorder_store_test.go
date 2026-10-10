@@ -3,7 +3,6 @@ package timeline_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"testing"
 
 	"github.com/compforge/go-stdx/timeline"
@@ -26,7 +25,7 @@ func TestRootRevisionsAndDocumentRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	last, _ := store.Read(ctx, "id")
-	if last.Status != timeline.Succeeded || string(last.Attributes["phase"]) != `"running"` {
+	if last.Status != timeline.Succeeded || string(last.Attributes["phase"]) != `"queued"` {
 		t.Fatalf("stale root: %+v", last)
 	}
 	raw, err := json.Marshal(last)
@@ -42,7 +41,7 @@ func TestRootRevisionsAndDocumentRoundTrip(t *testing.T) {
 		t.Fatalf("roundtrip changes document: %t %v", changed, err)
 	}
 	other := handle(t, "id", store, "other")
-	if err := other.Start(ctx, "start"); !errors.Is(err, timelinestore.ErrConflict) {
+	if err := other.Start(ctx, "start"); err != nil {
 		t.Fatalf("second coordinator: %v", err)
 	}
 }

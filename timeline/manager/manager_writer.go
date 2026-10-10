@@ -18,5 +18,5 @@ func (w *writer) Flush(ctx context.Context) error { return w.manager.Flush(ctx, 
 
 // ReadSnapshot collects through the same cache as ID-based recording.
 func (w *writer) ReadSnapshot(ctx context.Context) (Snapshot, error) {
-	return w.manager.Read(ctx, w.id)
+	return w.manager.Read(ctx, w.id, true)
 }

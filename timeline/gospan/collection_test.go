@@ -11,6 +11,7 @@ import (
 
 	"github.com/akmadian/gospan"
 	"github.com/compforge/go-stdx/timeline"
+	"github.com/compforge/go-stdx/timeline/model"
 )
 
 // Gate the writer, not the projection lock: this models delayed event delivery
@@ -43,8 +44,8 @@ func TestCollectionDeadlineAndFinishRetry(t *testing.T) {
 	}()
 	rootCtx, root := tracer.Start(context.Background(), "delayed")
 	registry := timeline.NewRegistry(func(context.Context, string, string, ...timeline.Attribute) (timeline.Timeline, error) {
-		imports, _ := timeline.New(t.Name())
-		return &recorder{tracer: tracer, root: root, rootCtx: rootCtx, sink: sink, imports: imports, stages: make(map[timeline.StageID]*stage)}, nil
+		imports, _ := timeline.New(t.Name(), timeline.WithActor(timeline.Actor{Name: "test"}))
+		return &recorder{tracer: tracer, root: root, rootCtx: rootCtx, sink: sink, imports: imports, stages: make(map[model.StageKey]*stage)}, nil
 	})
 	tl, err := registry.Create(context.Background(), t.Name(), "delayed")
 	if err != nil {
@@ -56,7 +57,7 @@ func TestCollectionDeadlineAndFinishRetry(t *testing.T) {
 	if !errors.Is(err, context.Canceled) || (partial.Collection.LocalFlushed && partial.Collection.StoreRead) || partial.ID != tl.ID() {
 		t.Fatalf("uncollected snapshot claimed success: %+v err=%v", partial, err)
 	}
-	_, stage := timeline.BeginWithContext(context.Background(), tl, "active")
+	_, stage := timeline.BeginWithContext(context.Background(), tl, "active", timeline.WithStageActor(timeline.Actor{Name: "test"}))
 	if _, err := tl.Finish(canceled, nil); !errors.Is(err, timeline.ErrActiveStages) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("active stage and collection errors = %v", err)
 	}
@@ -91,7 +92,7 @@ func TestCheckpointAttributeDoesNotCollideWithUserAttributes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, stage := timeline.BeginWithContext(ctx, tl, "work", timeline.WithAttributes(timeline.Attribute{Key: checkpointKey, Value: "user value"}))
+	_, stage := timeline.BeginWithContext(ctx, tl, "work", timeline.WithStageActor(timeline.Actor{Name: "test"}), timeline.WithAttributes(timeline.Attribute{Key: checkpointKey, Value: "user value"}))
 	stage.End(nil)
 	for range 3 {
 		if s, err := tl.Snapshot(context.Background()); err != nil || len(s.Attributes) != 1 || string(s.Attributes[checkpointKey]) != "999" {
@@ -116,7 +117,7 @@ func TestConstructorIsolatesForeignGospanContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, stage := timeline.BeginWithContext(ctx, tl, "child")
+	_, stage := timeline.BeginWithContext(ctx, tl, "child", timeline.WithStageActor(timeline.Actor{Name: "test"}))
 	stage.End(nil)
 	s, err := tl.Finish(context.Background(), nil)
 	if err != nil || s.Operation != "own" || len(s.Stages) != 1 || s.Stages[0].ParentID != "" {

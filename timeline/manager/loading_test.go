@@ -25,7 +25,7 @@ func (s *loadingStore) Read(ctx context.Context, id string) (store.Document, err
 func seed(t *testing.T, s *store.MemoryStore, id string) {
 	t.Helper()
 	now := time.Now()
-	if err := s.Merge(context.Background(), id, store.Update{Completed: []timeline.Stage{{ID: timeline.StageID(id + "-stage"), Name: "seed", StartedAt: now, FinishedAt: now, Status: timeline.Succeeded}}}); err != nil {
+	if err := s.Merge(context.Background(), id, store.Update{Completed: []timeline.Stage{{Actor: timeline.Actor{Name: "test"}, ID: timeline.StageID(id + "-stage"), Name: "seed", StartedAt: now, FinishedAt: now, Status: timeline.Succeeded}}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -46,10 +46,10 @@ func TestLoadingCacheSharesMissAndIsolatesCanceledWaiter(t *testing.T) {
 			return store.Document{}, ctx.Err()
 		}
 	}
-	m := newManager(t, backend, managed.Config{ExportTimeout: time.Second})
+	m := newManager(t, backend, managed.Config{Actor: managed.Actor{Name: "test"}, ExportTimeout: time.Second})
 	ctx, cancel := context.WithCancel(context.Background())
 	first := make(chan error, 1)
-	go func() { _, err := m.Read(ctx, "task"); first <- err }()
+	go func() { _, err := m.Read(ctx, "task", false); first <- err }()
 	waitSignal(t, entered)
 	cancel()
 	if err := <-first; !errors.Is(err, context.Canceled) {
@@ -60,7 +60,7 @@ func TestLoadingCacheSharesMissAndIsolatesCanceledWaiter(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s, err := m.Read(context.Background(), "task")
+			s, err := m.Read(context.Background(), "task", false)
 			if err != nil || len(s.Stages) != 1 {
 				t.Errorf("load: %+v %v", s, err)
 			}
@@ -68,7 +68,7 @@ func TestLoadingCacheSharesMissAndIsolatesCanceledWaiter(t *testing.T) {
 	}
 	close(release)
 	wg.Wait()
-	s, err := m.Read(context.Background(), "task")
+	s, err := m.Read(context.Background(), "task", false)
 	if err != nil || s.Collection.StoreRead || calls.Load() != 1 {
 		t.Fatalf("cache hit invoked loader: %+v calls=%d %v", s, calls.Load(), err)
 	}
@@ -84,12 +84,12 @@ func TestLoadingFailuresAreBoundedAndNotCached(t *testing.T) {
 		}
 		return backend.MemoryStore.Read(ctx, id)
 	}
-	m := newManager(t, backend, managed.Config{ExportTimeout: 10 * time.Millisecond})
-	if _, err := m.Read(context.Background(), "task"); !errors.Is(err, context.DeadlineExceeded) {
+	m := newManager(t, backend, managed.Config{Actor: managed.Actor{Name: "test"}, ExportTimeout: 10 * time.Millisecond})
+	if _, err := m.Read(context.Background(), "task", false); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal(err)
 	}
 	healthy.Store(true)
-	if _, err := m.Read(context.Background(), "task"); !errors.Is(err, store.ErrNotFound) {
+	if _, err := m.Read(context.Background(), "task", false); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal(err)
 	}
 	if m.Stats().CachedTimelines != 0 {
@@ -98,7 +98,7 @@ func TestLoadingFailuresAreBoundedAndNotCached(t *testing.T) {
 	if _, err := m.Begin("task", "new"); err != nil {
 		t.Fatal(err)
 	}
-	s, err := m.Read(context.Background(), "task")
+	s, err := m.Read(context.Background(), "task", false)
 	if err != nil || len(s.Stages) != 1 {
 		t.Fatalf("write loader did not create: %+v %v", s, err)
 	}
@@ -114,10 +114,10 @@ func TestLRUUsesStoreOnMiss(t *testing.T) {
 		calls.Add(1)
 		return backend.MemoryStore.Read(ctx, id)
 	}
-	m := newManager(t, backend, managed.Config{MaxTimelines: 2})
+	m := newManager(t, backend, managed.Config{Actor: managed.Actor{Name: "test"}, MaxTimelines: 2})
 	read := func(id string) timeline.Snapshot {
 		t.Helper()
-		s, err := m.Read(context.Background(), id)
+		s, err := m.Read(context.Background(), id, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -138,19 +138,19 @@ func TestLRUUsesStoreOnMiss(t *testing.T) {
 
 func TestReadOwnsDataAndDoesNotFlush(t *testing.T) {
 	backend := store.NewMemoryStore()
-	m := newManager(t, backend, managed.Config{FlushInterval: time.Hour})
+	m := newManager(t, backend, managed.Config{Actor: managed.Actor{Name: "test"}, FlushInterval: time.Hour})
 	now := time.Now()
-	data := timeline.Stage{ID: "external", Name: "source", StartedAt: now, FinishedAt: now, Status: timeline.Succeeded, Attributes: map[string]json.RawMessage{"value": json.RawMessage(`{"n":1}`)}}
+	data := timeline.Stage{Actor: timeline.Actor{Name: "test"}, ID: "external", Name: "source", StartedAt: now, FinishedAt: now, Status: timeline.Succeeded, Attributes: map[string]json.RawMessage{"value": json.RawMessage(`{"n":1}`)}}
 	if err := m.Record("task", data); err != nil {
 		t.Fatal(err)
 	}
 	data.Attributes["value"][5] = '9'
-	snapshot, err := m.Read(context.Background(), "task")
+	snapshot, err := m.Read(context.Background(), "task", false)
 	if err != nil || string(snapshot.Stages[0].Attributes["value"]) != `{"n":1}` || snapshot.Collection.LocalFlushed || snapshot.Collection.StoreRead {
 		t.Fatalf("read: %+v %v", snapshot, err)
 	}
 	snapshot.Stages[0].Attributes["value"][5] = '8'
-	again, err := m.Read(context.Background(), "task")
+	again, err := m.Read(context.Background(), "task", false)
 	if err != nil || string(again.Stages[0].Attributes["value"]) != `{"n":1}` {
 		t.Fatal("snapshot aliases cache")
 	}

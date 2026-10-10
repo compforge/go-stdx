@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/compforge/go-stdx/timeline/model"
 	"github.com/compforge/go-stdx/timeline/store"
 	"github.com/jellydator/ttlcache/v3"
 	"golang.org/x/sync/singleflight"
@@ -18,12 +19,16 @@ var ErrBufferFull = errors.New("timeline manager: pending save limit exceeded")
 
 // Config bounds cache capacity and backend calls. Zero fields select defaults.
 type Config struct {
+	Actor               model.Actor   // default recording actor, overridden by stage options
+	BatchLimit          int           // default 64 IDs per save batch, MGet or Latest
+	LoadInterval        time.Duration // default 1s between background loads
 	MaxTimelines        int           // default 1024 cached documents
 	FlushInterval       time.Duration // default 1s between background saves
 	ExportTimeout       time.Duration // default 5s for each Store read/merge
 	MaxPendingTimelines int           // default 1024, including evicted documents awaiting a final save
 	MaxPendingUpdates   int           // default 1024 per document, before coalescing a save batch
-	// OnError reports save failures outside locks. It must return promptly and
+	// OnError reports synchronization failures outside locks; batch load errors
+	// use an empty ID. Both workers may call concurrently. It must return promptly and
 	// must not call Shutdown. Default: slog with the timeline ID, without data.
 	OnError func(id string, err error)
 }
@@ -38,13 +43,18 @@ type Cache struct {
 	config       Config
 	items        *ttlcache.Cache[string, *entry]
 	loads        singleflight.Group
+	refreshes    singleflight.Group
 	mu           sync.Mutex // lifecycle and pending membership; never held during Store IO
 	pending      map[*entry]struct{}
 	closed       bool
 	ctx          context.Context
 	cancel       context.CancelFunc
 	done         chan struct{}
-	wake         chan struct{}
+	saveCh       chan string
+	loadCh       chan string
+	loadDone     chan struct{}
+	background   bool
+	schedule     uint64
 	stopEviction func()
 	shutdownMu   sync.Mutex
 	dropped      atomic.Uint64
@@ -64,6 +74,12 @@ type entry struct {
 	lossErr    error
 	lost       bool
 	gate       chan struct{}
+	accepted   uint64
+	saved      uint64
+	batchSeq   uint64
+	attempts   uint64
+	changed    chan struct{}
+	scheduled  uint64 // protected by Cache.mu
 }
 
 // Closed reports whether new writes and loads are rejected.
@@ -88,8 +104,14 @@ func newCache(backend store.Store, config Config, background bool) (*Cache, erro
 	if backend == nil {
 		return nil, errors.New("timeline manager: nil Store")
 	}
-	if config.MaxTimelines < 0 || config.FlushInterval < 0 || config.ExportTimeout < 0 || config.MaxPendingTimelines < 0 || config.MaxPendingUpdates < 0 {
+	if config.BatchLimit < 0 || config.LoadInterval < 0 || config.MaxTimelines < 0 || config.FlushInterval < 0 || config.ExportTimeout < 0 || config.MaxPendingTimelines < 0 || config.MaxPendingUpdates < 0 {
 		return nil, errors.New("timeline manager: negative configuration")
+	}
+	if config.BatchLimit == 0 {
+		config.BatchLimit = 64
+	}
+	if config.LoadInterval == 0 {
+		config.LoadInterval = time.Second
 	}
 	if config.MaxTimelines == 0 {
 		config.MaxTimelines = 1024
@@ -107,25 +129,26 @@ func newCache(backend store.Store, config Config, background bool) (*Cache, erro
 		config.MaxPendingUpdates = 1024
 	}
 	if config.OnError == nil {
-		config.OnError = func(id string, err error) { slog.Error("timeline save failed", "timeline_id", id, "error", err) }
+		config.OnError = func(id string, err error) {
+			slog.Error("timeline synchronization failed", "timeline_id", id, "error", err)
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	c := &Cache{store: backend, config: config, pending: make(map[*entry]struct{}), ctx: ctx, cancel: cancel, done: make(chan struct{}), wake: make(chan struct{}, 1)}
+	c := &Cache{store: backend, config: config, pending: make(map[*entry]struct{}), ctx: ctx, cancel: cancel, done: make(chan struct{}), loadDone: make(chan struct{}), background: background, saveCh: make(chan string, config.MaxPendingTimelines), loadCh: make(chan string, config.MaxTimelines)}
 	c.items = ttlcache.New(ttlcache.WithCapacity[string, *entry](uint64(config.MaxTimelines)))
 	c.stopEviction = c.items.OnEviction(func(_ context.Context, _ ttlcache.EvictionReason, item *ttlcache.Item[string, *entry]) {
 		e := item.Value()
 		e.mu.Lock()
 		e.evicted = true
 		e.mu.Unlock()
-		select {
-		case c.wake <- struct{}{}:
-		default:
-		}
+		c.requestSave(e.id)
 	})
 	if background {
-		go c.run()
+		go c.runSave()
+		go c.runLoad()
 	} else {
 		close(c.done)
+		close(c.loadDone)
 	}
 	return c, nil
 }

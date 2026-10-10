@@ -8,7 +8,7 @@ import (
 )
 
 func Example() {
-	m, err := timeline.NewManager(nil, timeline.Config{})
+	m, err := timeline.NewManager(nil, timeline.Config{Actor: timeline.Actor{Name: "test"}})
 	if err != nil {
 		panic(err)
 	}
@@ -23,7 +23,7 @@ func Example() {
 	if err := timeline.End("task-42", "prepare_files", nil); err != nil {
 		panic(err)
 	}
-	snapshot, err := timeline.Read(context.Background(), "task-42")
+	snapshot, err := timeline.Read(context.Background(), "task-42", false)
 	if err != nil {
 		panic(err)
 	}

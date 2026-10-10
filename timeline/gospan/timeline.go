@@ -15,6 +15,7 @@ import (
 
 	"github.com/akmadian/gospan"
 	"github.com/compforge/go-stdx/timeline"
+	"github.com/compforge/go-stdx/timeline/model"
 	"github.com/compforge/go-stdx/timeline/store"
 	"github.com/google/uuid"
 )
@@ -30,7 +31,7 @@ type recorder struct {
 	attributeErr error // first encoding error; lost input keeps subsequent snapshots incomplete
 	finished     bool
 	imports      *timeline.Handle
-	stages       map[timeline.StageID]*stage
+	stages       map[model.StageKey]*stage
 }
 
 type stage struct {
@@ -66,7 +67,7 @@ func New(_ context.Context, id, operation string, attributes ...timeline.Attribu
 	// Span IDs are local to a tracer. Never inherit a foreign gospan parent.
 	rootCtx, root := tracer.Start(context.Background(), operation, initialAttrs...)
 	imports, _ := timeline.New(id)
-	t := &recorder{tracer: tracer, root: root, rootCtx: rootCtx, sink: sink, imports: imports, stages: make(map[timeline.StageID]*stage)}
+	t := &recorder{tracer: tracer, root: root, rootCtx: rootCtx, sink: sink, imports: imports, stages: make(map[model.StageKey]*stage)}
 	return t, nil
 }
 
@@ -87,17 +88,14 @@ func (t *recorder) Begin(name string, opts ...timeline.StageOption) timeline.Sta
 			return inertStage{}
 		}
 	}
-	if data.ID == "" || data.ID == data.ParentID || data.ID == t.sink.rootID || data.StartedAt.IsZero() {
+	if data.Actor.Key() == "" || data.ID == "" || data.ID == data.ParentID || data.ID == t.sink.rootID || data.StartedAt.IsZero() {
 		t.attributeErr = errors.Join(t.attributeErr, timeline.ErrInvalidStage)
 		return inertStage{}
 	}
-	if _, exists := t.stages[data.ID]; exists {
-		t.attributeErr = errors.Join(t.attributeErr, store.ErrConflict)
-		return inertStage{}
-	}
+
 	// Parent IDs are timeline data; only a local live handle supplies a native parent.
 	spanCtx := t.rootCtx
-	if parent := t.stages[data.ParentID]; parent != nil {
+	if parent := t.stages[model.StageKey{ID: data.ParentID, Actor: data.Actor.Key()}]; parent != nil {
 		spanCtx = parent.spanCtx
 	}
 	data.Attributes = cloneAttributes(data.Attributes)
@@ -106,7 +104,7 @@ func (t *recorder) Begin(name string, opts ...timeline.StageOption) timeline.Sta
 	if !data.StartedAt.Equal(now) {
 		s.started = time.Time{}
 	}
-	t.stages[data.ID] = s
+	t.stages[data.Key()] = s
 	t.active++
 	return s
 }
@@ -118,13 +116,11 @@ func (s *stage) ID() timeline.StageID { return s.data.ID }
 func (t *recorder) Record(data timeline.Stage) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if existing := t.stages[data.ID]; existing != nil {
-		return store.ErrConflict
-	}
+
 	if err := t.imports.Record(data); err != nil {
 		return err
 	}
-	t.stages[data.ID] = nil
+	t.stages[data.Key()] = nil
 	return nil
 }
 
@@ -228,7 +224,18 @@ func (t *recorder) snapshot(collectionErr error) (timeline.Snapshot, error) {
 	}
 	err = errors.Join(err, importErr)
 	result := t.sink.snapshot(err == nil)
-	result.Stages = append(result.Stages, imports.Stages...)
+	positions := make(map[model.StageKey]int, len(result.Stages))
+	for i, stage := range result.Stages {
+		positions[stage.Key()] = i
+	}
+	for _, stage := range imports.Stages {
+		if i, ok := positions[stage.Key()]; ok {
+			result.Stages[i] = stage
+		} else {
+			positions[stage.Key()] = len(result.Stages)
+			result.Stages = append(result.Stages, stage)
+		}
+	}
 	if len(imports.Stages) != 0 {
 		result.CapturedAt = imports.CapturedAt
 	}
@@ -236,7 +243,10 @@ func (t *recorder) snapshot(collectionErr error) (timeline.Snapshot, error) {
 		if order := a.StartedAt.Compare(b.StartedAt); order != 0 {
 			return order
 		}
-		return cmp.Compare(a.ID, b.ID)
+		if n := cmp.Compare(a.ID, b.ID); n != 0 {
+			return n
+		}
+		return cmp.Compare(a.Actor.Key(), b.Actor.Key())
 	})
 	return result, err
 }
