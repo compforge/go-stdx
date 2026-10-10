@@ -1,7 +1,6 @@
 package manager
 
 import (
-	"github.com/compforge/go-stdx/timeline/model"
 	"github.com/compforge/go-stdx/timeline/store"
 )
 
@@ -43,9 +42,6 @@ func (m *Manager) End(id, name string, stageErr error, options ...EndOption) err
 		if err := option(&selector); err != nil {
 			return err
 		}
-	}
-	if selector.Actor.Key() == "" {
-		return model.ErrInvalidStage
 	}
 	return m.apply(id, func(r *recorder, doc store.Document) error {
 		var selected *store.StageUpdate

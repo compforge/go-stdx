@@ -7,10 +7,12 @@ Timeline 将并行运行的多个调用方实例围绕同一操作产生的阶�
 Timeline 按应用提供的 opid 汇总阶段记录。多个实例使用数据库作为共享渠道，周期性保存本地
 变化、加载其它实例的变化。它用于观测和诊断，尽力让各实例看到相近视图，不保证强一致或
 最终完整。业务 ID、操作结果、保留期和快照导出由应用决定。
+单机使用同样适用：省略 Actor 和 Store，事实留在本地缓存，由应用读取并导出。
 
 StageID 表示逻辑阶段，Actor 表示执行者。一个操作内以 `(StageID, ActorKey)` 唯一定位
-阶段记录：Actor.ID 非空时使用 ID，否则使用 Name；两者至少一个非空。ID 和 Name 属于
-不同命名空间，有 ID 时 Name 只影响展示。只提供 Name 后再补入 ID 会形成不同身份。
+阶段记录：单机使用可以省略 Actor，空值表示默认执行者。需要区分多个执行者时再填写：
+Actor.ID 非空时使用 ID，否则使用 Name。ID 和 Name 属于不同命名空间，有 ID 时 Name
+只影响展示。只提供 Name 后再补入 ID 会形成不同身份。多个调用方省略 Actor 时共享默认身份。
 
 不同 Actor 可以并发操作同一个 StageID，各自的结果分别保留。同一复合键保存当前状态，
 按存储实际接收顺序覆盖，不保留每次调用历史。不同进程的 revision 不参与全局新旧裁决。
@@ -36,7 +38,8 @@ Snapshot 是一次读取的独立视图，Document 是持久化的当前记录�
 
 ## 使用流程
 
-应用启动时创建 Manager，并通过 SetDefault 安装默认实例。Config.Actor 可提供默认执行者，
+应用启动时创建 Manager，并通过 SetDefault 安装默认实例。单机可直接使用 Config{}；
+Config.Actor 可提供默认执行者，
 Begin 的 WithStageActor 可以覆盖它。阶段句柄 End 自动使用创建时的 Actor；按名称 End
 使用默认 Actor，或通过 WithEndActor 指定来源，再匹配该 Actor 唯一运行中的同名阶段。
 同名但不同 StageID 的并行阶段可通过各自句柄精确结束。
@@ -137,7 +140,7 @@ NewManager(nil, config) 和独立 Handle 默认使用它。纯内存事实仅保
 
 属性在录制返回前完成 JSON 编码，保留大整数精度。输出使用 attributes，读取也接受
 历史 fields。Document 与 Snapshot 的 actors 字典、actor_ref 仅在当前 payload 内有效，
-解码得到完整 Actor 后再合并。历史空 Actor 仍可解码和读取，新录制要求 ID 或 Name。
+解码得到完整 Actor 后再合并。省略 Actor 的阶段不生成 actors 条目或 actor_ref。
 
 对象式 `timeline.New(id, ...Option)` 返回 Handle，使用 WithActor 配置执行者；独立 Handle
 没有后台协程，通过 Flush / Snapshot / Finish 显式提交。Manager.NewWriter 返回的 Handle

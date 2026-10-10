@@ -88,7 +88,7 @@ func (t *recorder) Begin(name string, opts ...timeline.StageOption) timeline.Sta
 			return inertStage{}
 		}
 	}
-	if data.Actor.Key() == "" || data.ID == "" || data.ID == data.ParentID || data.ID == t.sink.rootID || data.StartedAt.IsZero() {
+	if data.ID == "" || data.ID == data.ParentID || data.ID == t.sink.rootID || data.StartedAt.IsZero() {
 		t.attributeErr = errors.Join(t.attributeErr, timeline.ErrInvalidStage)
 		return inertStage{}
 	}

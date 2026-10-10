@@ -138,7 +138,7 @@ func (t *recorder) Begin(name string, opts ...StageOption) StageHandle {
 			return noopStage{}
 		}
 	}
-	if data.Actor.Key() == "" || data.Name == "" || data.ID == "" || data.ID == data.ParentID || data.ID == model.RootID(t.id) || data.StartedAt.IsZero() {
+	if data.Name == "" || data.ID == "" || data.ID == data.ParentID || data.ID == model.RootID(t.id) || data.StartedAt.IsZero() {
 		t.recordError(ErrInvalidStage)
 		return noopStage{}
 	}

@@ -17,7 +17,7 @@ func TestDocumentInvalidMergeIsAtomicAndTerminalCanBeReplaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	changed := stage
-	changed.Actor = timeline.Actor{}
+	changed.ID = ""
 	another := stage
 	another.ID = "another"
 	if _, _, err := timelinestore.MergeDocument("id", doc, timelinestore.Update{Stages: []timelinestore.StageUpdate{another, changed}}); !errors.Is(err, timeline.ErrInvalidStage) {

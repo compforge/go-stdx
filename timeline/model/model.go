@@ -12,7 +12,8 @@ var ErrEmptyID = errors.New("timeline: ID must not be empty")
 var ErrInvalidAttribute = errors.New("timeline: attribute is not JSON serializable")
 
 // Actor identifies the executor, not the requesting user.
-// At least one of ID and Name is required for new records. ID takes precedence.
+// The zero value is the default executor for single-process recording.
+// When provided, ID takes precedence over Name.
 type Actor struct {
 	ID   string `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
