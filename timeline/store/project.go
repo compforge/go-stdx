@@ -11,7 +11,7 @@ import (
 // Snapshot returns detached read-time data. Storage success is set by the
 // reader, never persisted as a claim about future collection completeness.
 func (d Document) Snapshot(capturedAt time.Time) model.Snapshot {
-	d = cloneDocument(d)
+	d = d.Clone()
 	stages := make([]model.Stage, len(d.Stages))
 	for i := range d.Stages {
 		stages[i] = d.Stages[i].Stage

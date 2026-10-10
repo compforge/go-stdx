@@ -94,7 +94,7 @@ func TestManagerPersistsRunningAndFinalStagesWithoutFlush(t *testing.T) {
 		return len(d.Stages) == 1 && d.Stages[0].Status == timeline.Failed &&
 			d.Stages[0].Error == "init failed" && string(d.Stages[0].Attributes["step"]) == `"files"`
 	})
-	eventually(t, func() bool { return m.Stats().PendingHandles == 0 })
+	eventually(t, func() bool { return m.Stats().PendingTimelines == 0 })
 	// An idle handle can become dirty again without a Registry entry or release API.
 	r.Begin("late").End(nil)
 	eventually(t, func() bool {
@@ -251,7 +251,7 @@ func TestManagerShutdownCancelsWorkerAndDrains(t *testing.T) {
 		t.Fatal(err)
 	}
 	d, _ := store.Read(ctx, "shutdown")
-	if len(d.Stages) != 1 || d.Stages[0].Status != timeline.Succeeded || m.Stats().PendingHandles != 0 {
+	if len(d.Stages) != 1 || d.Stages[0].Status != timeline.Succeeded || m.Stats().PendingTimelines != 0 {
 		t.Fatalf("shutdown did not drain: %+v", d)
 	}
 	if _, err := m.NewWriter("new", timeline.Actor{}); !errors.Is(err, managed.ErrClosed) {
@@ -263,30 +263,22 @@ func TestManagerShutdownCancelsWorkerAndDrains(t *testing.T) {
 	}
 }
 
-func TestManagerFailedShutdownCanBeRetried(t *testing.T) {
-	store := &managedStore{MemoryStore: timelinestore.NewMemoryStore()}
-	var available atomic.Bool
-	store.merge = func(ctx context.Context, id string, u timelinestore.Update) error {
-		if !available.Load() {
-			<-ctx.Done()
-			return ctx.Err()
-		}
-		return store.MemoryStore.Merge(ctx, id, u)
-	}
-	m := newManager(t, store, managed.Config{})
-	managedHandle(t, m, "shutdown-retry", "").Begin("work").End(nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
-	if err := m.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected drain deadline: %v", err)
-	}
-	available.Store(true)
-	if err := m.Shutdown(context.Background()); err != nil {
+func TestManagerFailedFinalDrainReleasesBuffers(t *testing.T) {
+	backend := &managedStore{MemoryStore: timelinestore.NewMemoryStore()}
+	unavailable := errors.New("offline")
+	backend.merge = func(context.Context, string, timelinestore.Update) error { return unavailable }
+	m := newManager(t, backend, managed.Config{FlushInterval: time.Hour})
+	if _, err := m.Begin("task", "work"); err != nil {
 		t.Fatal(err)
 	}
-	d, _ := store.Read(context.Background(), "shutdown-retry")
-	if len(d.Stages) != 1 || d.Stages[0].Status != timeline.Succeeded {
-		t.Fatalf("retry lost records: %+v", d)
+	if err := m.Shutdown(context.Background()); !errors.Is(err, unavailable) {
+		t.Fatalf("drain: %v", err)
+	}
+	if got := m.Stats(); got.CachedTimelines != 0 || got.PendingTimelines != 0 || got.DroppedUpdates != 1 {
+		t.Fatalf("retained buffers: %+v", got)
+	}
+	if err := m.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -304,7 +296,7 @@ func TestManagerBoundsBuffersAndCoalescesUnsentUpdates(t *testing.T) {
 		}
 	}
 	m := newManager(t, store, managed.Config{
-		MaxPendingHandles: 1, MaxPendingUpdates: 2, ExportTimeout: time.Second,
+		MaxPendingTimelines: 1, MaxPendingUpdates: 2, ExportTimeout: time.Second,
 	})
 	r := managedHandle(t, m, "bounded", "")
 	s := r.Begin("work")
@@ -347,8 +339,7 @@ func TestManagerRecordImportAndConflict(t *testing.T) {
 		return len(d.Stages) == 1 && d.Stages[0].Status == timeline.Succeeded
 	})
 	s.Name = "conflicting-name"
-	_ = r.Record(s)
-	if err := r.Flush(context.Background()); !errors.Is(err, timelinestore.ErrConflict) {
+	if err := r.Record(s); !errors.Is(err, timelinestore.ErrConflict) {
 		t.Fatalf("conflict lost: %v", err)
 	}
 }

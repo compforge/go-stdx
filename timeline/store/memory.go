@@ -34,5 +34,5 @@ func (s *MemoryStore) Read(ctx context.Context, id string) (Document, error) {
 	if !ok {
 		return Document{}, ErrNotFound
 	}
-	return cloneDocument(doc), nil
+	return doc.Clone(), nil
 }

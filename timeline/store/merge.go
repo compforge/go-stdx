@@ -12,7 +12,7 @@ func MergeDocument(id string, current Document, update Update) (doc Document, ch
 	if current.ID != "" && current.ID != id {
 		return Document{}, false, ErrConflict
 	}
-	doc = cloneDocument(current)
+	doc = current.Clone()
 	doc.ID, doc.RootStageID = id, model.RootID(id)
 	if incoming := update.Operation; incoming != nil {
 		operation, operationChanged, err := mergeOperation(doc.OperationRecord, *incoming)
@@ -89,7 +89,8 @@ func MergeDocument(id string, current Document, update Update) (doc Document, ch
 	return doc, changed, nil
 }
 
-func cloneDocument(doc Document) Document {
+// Clone returns a detached document, including all JSON attribute values.
+func (doc Document) Clone() Document {
 	doc.Attributes = model.CloneJSONAttributes(doc.Attributes)
 	doc.Stages = append([]StageUpdate(nil), doc.Stages...)
 	for i := range doc.Stages {

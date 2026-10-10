@@ -59,7 +59,7 @@ func TestSixEntryPointsAndOptionalBoundaries(t *testing.T) {
 	if err != nil || snapshot.StartedAt.IsZero() || !snapshot.FinishedAt.Equal(end) || len(snapshot.Stages) != 3 || snapshot.Operation != "startup" {
 		t.Fatalf("late facts: %+v %v", snapshot, err)
 	}
-	if got := m.Stats(); got.CachedTimelines != 1 || got.ActiveStages != 0 {
+	if got := m.Stats(); got.CachedTimelines != 1 {
 		t.Fatalf("Finish changed cache lifetime: %+v", got)
 	}
 	if err := managed.Start("task", "different"); !errors.Is(err, timelinestore.ErrConflict) {
@@ -122,7 +122,7 @@ func TestNamedStageAmbiguityParentAndReuse(t *testing.T) {
 	}
 }
 
-func TestBoundariesDoNotWaitForStore(t *testing.T) {
+func TestCachedReadsDoNotWaitForPersistence(t *testing.T) {
 	store := &managedStore{MemoryStore: timelinestore.NewMemoryStore()}
 	unavailable := errors.New("store unavailable")
 	var available atomic.Bool
@@ -140,7 +140,10 @@ func TestBoundariesDoNotWaitForStore(t *testing.T) {
 	if err := m.Finish("task", failure); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Read(context.Background(), "task"); !errors.Is(err, unavailable) {
+	if snapshot, err := m.Read(context.Background(), "task"); err != nil || snapshot.Status != timeline.Failed {
+		t.Fatalf("cache read: %+v %v", snapshot, err)
+	}
+	if err := m.FlushID(context.Background(), "task"); !errors.Is(err, unavailable) {
 		t.Fatal(err)
 	}
 	available.Store(true)
@@ -157,31 +160,32 @@ func TestBoundariesDoNotWaitForStore(t *testing.T) {
 	}
 }
 
-func TestManagersShareFactsNotStageHandles(t *testing.T) {
+func TestManagerResumesFactsPersistedByAnotherManager(t *testing.T) {
 	ctx := context.Background()
-	store := timelinestore.NewMemoryStore()
-	first, second := newManager(t, store, managed.Config{}), newManager(t, store, managed.Config{})
+	backend := timelinestore.NewMemoryStore()
+	first, second := newManager(t, backend, managed.Config{}), newManager(t, backend, managed.Config{})
 	if err := first.Start("task", "startup"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := first.Begin("task", "first"); err != nil {
+	stage, err := first.Begin("task", "work")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := second.End("task", "first", nil); !errors.Is(err, managed.ErrStageNotFound) {
+	if err = first.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := second.Finish("task", nil); err != nil {
+	if err = second.End("task", "work", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := second.Flush(ctx); err != nil {
+	if err = second.Finish("task", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := first.End("task", "first", nil); err != nil {
+	if err = second.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := first.Read(ctx, "task")
-	if err != nil || snapshot.Status != timeline.Succeeded || snapshot.StartedAt.IsZero() || len(snapshot.Stages) != 1 {
-		t.Fatalf("cross-process boundaries: %+v %v", snapshot, err)
+	doc, err := backend.Read(ctx, "task")
+	if err != nil || doc.Status != timeline.Succeeded || doc.StartedAt.IsZero() || len(doc.Stages) != 1 || doc.Stages[0].ID != stage.ID() || doc.Stages[0].Status != timeline.Succeeded {
+		t.Fatalf("restored facts: %+v %v", doc, err)
 	}
 }
 

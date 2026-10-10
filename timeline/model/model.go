@@ -86,8 +86,11 @@ type Snapshot struct {
 // Collection is deliberately scoped: neither field asserts that all distributed
 // participants have reported. Remote crashed/unflushed producers are unknown.
 type Collection struct {
+	// LocalFlushed means no known pending local facts or save loss. A cached
+	// read reports the current state without forcing a flush.
 	LocalFlushed bool `json:"local_flushed"`
-	StoreRead    bool `json:"store_read"`
+	// StoreRead means this read fetched persistent state; a cache hit is false.
+	StoreRead bool `json:"store_read"`
 }
 
 func (s Snapshot) Duration() time.Duration {

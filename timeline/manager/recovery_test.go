@@ -47,12 +47,15 @@ func TestRejectedTerminalAdmissionCanBeRetried(t *testing.T) {
 			if err := end(businessErr); !errors.Is(err, managed.ErrBufferFull) {
 				t.Fatalf("expected backpressure: %v", err)
 			}
-			if kind == "stage" && m.Stats().ActiveStages != 1 {
-				t.Fatal("rejected End released the stage")
+			if kind == "stage" {
+				snapshot, err := m.Read(context.Background(), "task")
+				if err != nil || len(snapshot.RunningStages()) != 1 {
+					t.Fatalf("rejected End changed stage: %+v %v", snapshot, err)
+				}
 			}
 			close(release)
-			eventually(t, func() bool { return m.Stats().PendingHandles == 0 })
-			// The first valid result remains fixed even if the retry supplies nil.
+			eventually(t, func() bool { return m.Stats().PendingTimelines == 0 })
+			// Rejected operations do not advance cached state; retry accepts its result.
 			if err := end(nil); err != nil {
 				t.Fatal(err)
 			}
@@ -64,98 +67,27 @@ func TestRejectedTerminalAdmissionCanBeRetried(t *testing.T) {
 			if kind == "stage" {
 				status, message = snapshot.Stages[0].Status, snapshot.Stages[0].Error
 			}
-			if status != timeline.Failed || message != businessErr.Error() {
+			if status != timeline.Succeeded || message != "" {
 				t.Fatalf("terminal lost on retry: %+v", snapshot)
 			}
 		})
 	}
 }
 
-func TestReadRetainsActiveParticipantRecordingError(t *testing.T) {
+func TestRejectedAttributesDoNotChangeCachedFacts(t *testing.T) {
 	m := newManager(t, timelinestore.NewMemoryStore(), managed.Config{})
 	stage, err := m.Begin("task", "work")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := stage.SetAttributes(timeline.Attribute{Key: "invalid", Value: make(chan int)}); !errors.Is(err, timeline.ErrInvalidAttribute) {
+	if err = stage.SetAttributes(timeline.Attribute{Key: "invalid", Value: make(chan int)}); !errors.Is(err, timeline.ErrInvalidAttribute) {
 		t.Fatal(err)
 	}
-	eventually(t, func() bool { return m.Stats().PendingHandles == 0 })
+	if err = stage.End(nil); err != nil {
+		t.Fatal(err)
+	}
 	snapshot, err := m.Read(context.Background(), "task")
-	if !errors.Is(err, timeline.ErrInvalidAttribute) || snapshot.Collection.LocalFlushed || !snapshot.Collection.StoreRead || m.Stats().ActiveStages != 1 {
-		t.Fatalf("active error forgotten: %+v %v", snapshot, err)
-	}
-	stage.End(nil)
-	eventually(t, func() bool { return m.Stats().PendingHandles == 0 })
-	if _, err := m.Read(context.Background(), "task"); !errors.Is(err, timeline.ErrInvalidAttribute) {
-		t.Fatalf("ended participant error forgotten: %v", err)
-	}
-}
-
-func TestPermanentConflictRetiresWithoutPoisoningQueue(t *testing.T) {
-	ctx := context.Background()
-	m := newManager(t, timelinestore.NewMemoryStore(), managed.Config{MaxPendingHandles: 1})
-	now := time.Now()
-	stage := timeline.Stage{ID: "stable", Name: "work", StartedAt: now, FinishedAt: now, Status: timeline.Succeeded}
-	if err := m.Record("task", stage); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := m.Read(ctx, "task"); err != nil {
-		t.Fatal(err)
-	}
-	stage.Name = "conflict"
-	if err := m.Record("task", stage); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := m.Read(ctx, "task"); !errors.Is(err, timelinestore.ErrConflict) {
-		t.Fatal(err)
-	}
-	eventually(t, func() bool { return m.Stats().PendingHandles == 0 })
-	if m.Stats().RejectedUpdates != 1 {
-		t.Fatalf("missing rejection accounting: %+v", m.Stats())
-	}
-	if _, err := m.Begin("healthy", "work"); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.End("healthy", "work", nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := m.Read(ctx, "healthy"); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.Shutdown(ctx); err != nil {
-		t.Fatalf("permanent rejection blocked shutdown: %v", err)
-	}
-}
-
-func TestEvictionKeepsAcceptedOutbox(t *testing.T) {
-	ctx := context.Background()
-	store := &managedStore{MemoryStore: timelinestore.NewMemoryStore()}
-	var available atomic.Bool
-	store.merge = func(ctx context.Context, id string, u timelinestore.Update) error {
-		if !available.Load() {
-			return errors.New("offline")
-		}
-		return store.MemoryStore.Merge(ctx, id, u)
-	}
-	m := newManager(t, store, managed.Config{MaxTimelines: 1})
-	if _, err := m.Begin("evicted", "work"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := m.Begin("current", "work"); err != nil {
-		t.Fatal(err)
-	}
-	if m.Stats().PendingHandles != 2 {
-		t.Fatal("eviction discarded accepted writes")
-	}
-	available.Store(true)
-	if err := m.Flush(ctx); err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []string{"evicted", "current"} {
-		doc, err := store.Read(ctx, id)
-		if err != nil || len(doc.Stages) != 1 {
-			t.Fatalf("outbox lost %s: %+v %v", id, doc, err)
-		}
+	if err != nil || len(snapshot.Stages) != 1 || snapshot.Stages[0].Status != timeline.Succeeded || len(snapshot.Stages[0].Attributes) != 0 {
+		t.Fatalf("rejected write changed facts: %+v %v", snapshot, err)
 	}
 }

@@ -22,10 +22,9 @@ func WithStore(backend store.Store) Option { return func(t *Recorder) { t.store 
 func WithActor(actor Actor) Option         { return func(t *Recorder) { t.actor = actor } }
 
 // Writer accepts immutable recording facts and provides a persistence checkpoint.
-// Write performs no remote IO. A rejected write must not be retained. Successful
-// writes belong to the writer until Flush acknowledges them or reports a permanent
-// rejection. Implementations must support concurrent callers.
-// Manager supplies a bounded background writer; standalone Recorder buffers locally.
+// A rejected write must not be retained. Acceptance and retention depend on the
+// implementation: Manager uses a best-effort loading cache; standalone Recorder
+// buffers until an explicit Flush. Implementations support concurrent callers.
 type Writer interface {
 	Write(store.Update) error
 	// RecordError retains collection loss independently of pending queue membership.
@@ -71,7 +70,7 @@ func New(id string, options ...Option) (*Recorder, error) {
 }
 func (t *Recorder) ID() string { return t.id }
 
-// RecordStart accepts an optional operation beginning without IO. Repeating the
+// RecordStart accepts an optional beginning without forcing a flush. Repeating the
 // same facts is idempotent and retains the original time. Finish may arrive first.
 func (t *Recorder) RecordStart(operation string, attributes ...Attribute) error {
 	t.mu.Lock()
@@ -287,7 +286,8 @@ func mergeAttributes(dst, src map[string]json.RawMessage) map[string]json.RawMes
 	return dst
 }
 
-// Flush checkpoints this writer only. Manager.Read checkpoints all local writers for the ID.
+// Flush checkpoints the configured writer. A Manager-backed writer checkpoints
+// its ID; a standalone writer checkpoints only its own buffer.
 func (t *Recorder) Flush(ctx context.Context) error {
 	return errors.Join(t.writer.Flush(ctx), t.Err())
 }

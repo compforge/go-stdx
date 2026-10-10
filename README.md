@@ -86,19 +86,20 @@ snapshot, recordingErr := manager.Read(ctx, operationID)
 
 `Record(id, Stage)` imports a completed interval with its source timestamps and actor.
 `Start(id, operation, ...Attribute)` optionally records the operation beginning;
-`Finish(id, result)` optionally records its outcome, even without Start. Both buffer
-facts without remote IO. Undeclared outcomes remain `unknown`; Finish accepts late stages.
-For parallel stages sharing a name, retain their returned handles to end them precisely.
+`Finish(id, result)` optionally records its outcome, even without Start. Undeclared
+outcomes remain `unknown`; Finish accepts late stages. For parallel stages sharing
+a name, retain their returned handles to end them precisely.
 
-Manager automatically persists accepted records. Local timelines expire at a fixed TTL
-from creation; access updates LRU but never extends TTL. At capacity, the least recently
-used timeline is evicted. Eviction invalidates local handles while preserving accepted
-pending writes and stored history. ID-based writes can create a fresh local entry.
+Manager serves reads and writes from memory, loading Store on a cache miss and
+creating missing timelines for writes. It saves changes in the background.
+Fixed TTL and LRU release cached copies; persisted stages can be restored and
+continued through their existing handles. Eviction does not finish a timeline.
 
-`Read` checkpoints this ID's local writers and returns a Snapshot, including collection
-status. It never claims remote writers are complete. For a strict cross-process handoff,
-use `m.FlushID(ctx, id)` before publishing completion. Snapshot methods include
-`Summary()`, `RunningStages()` and `LatestFailedStage()`.
+This is a best-effort cache: warm reads may lag other processes, and unsaved facts
+can be lost if final saving fails. `Read` returns the current view without waiting
+for persistence. Use `m.FlushID(ctx, id)` for an explicit persistence checkpoint;
+use Store directly when each operation must observe or update durable state.
+Snapshot methods include `Summary()`, `RunningStages()` and `LatestFailedStage()`.
 
 At shutdown, stop producers, call `m.Shutdown` with an independent bounded context, then
 close the database. Use an explicit Manager's methods for isolation. `timeline.New`
