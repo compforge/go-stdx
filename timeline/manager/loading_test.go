@@ -157,7 +157,7 @@ func TestReadOwnsDataAndDoesNotFlush(t *testing.T) {
 	if _, err = backend.Read(context.Background(), "task"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal("Read forced persistence")
 	}
-	if err = m.FlushID(context.Background(), "task"); err != nil {
+	if err = m.Flush(context.Background(), "task", true); err != nil {
 		t.Fatal(err)
 	}
 	if doc, err := backend.Read(context.Background(), "task"); err != nil || string(doc.Stages[0].Attributes["value"]) != `{"n":1}` {

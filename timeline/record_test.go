@@ -149,11 +149,12 @@ func TestRecordConflictsAreNotCoalescedAway(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if err := tl.Record(b); err != nil {
-					t.Fatal(err)
-				}
-				if err := tl.Flush(ctx); !errors.Is(err, timelinestore.ErrConflict) {
+				if err := tl.Record(b); !errors.Is(err, timelinestore.ErrConflict) {
 					t.Fatalf("conflict silently accepted: %v", err)
+				}
+				snapshot, err := tl.Snapshot(ctx)
+				if err != nil || len(snapshot.Stages) != 1 || !snapshot.Stages[0].FinishedAt.Equal(a.FinishedAt) {
+					t.Fatalf("rejected import changed facts: %+v %v", snapshot, err)
 				}
 			})
 		})

@@ -1,4 +1,4 @@
-package timeline
+package manager
 
 import "context"
 

@@ -143,7 +143,7 @@ func TestCachedReadsDoNotWaitForPersistence(t *testing.T) {
 	if snapshot, err := m.Read(context.Background(), "task"); err != nil || snapshot.Status != timeline.Failed {
 		t.Fatalf("cache read: %+v %v", snapshot, err)
 	}
-	if err := m.FlushID(context.Background(), "task"); !errors.Is(err, unavailable) {
+	if err := m.Flush(context.Background(), "task", true); !errors.Is(err, unavailable) {
 		t.Fatal(err)
 	}
 	available.Store(true)
@@ -171,7 +171,7 @@ func TestManagerResumesFactsPersistedByAnotherManager(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = first.Flush(ctx); err != nil {
+	if err = first.Flush(ctx, "task", true); err != nil {
 		t.Fatal(err)
 	}
 	if err = second.End("task", "work", nil); err != nil {
@@ -180,7 +180,7 @@ func TestManagerResumesFactsPersistedByAnotherManager(t *testing.T) {
 	if err = second.Finish("task", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err = second.Flush(ctx); err != nil {
+	if err = second.Flush(ctx, "task", true); err != nil {
 		t.Fatal(err)
 	}
 	doc, err := backend.Read(ctx, "task")

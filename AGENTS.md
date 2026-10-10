@@ -10,23 +10,10 @@ Go stdlib 扩展库，长期对标 Java 里 Guava 的位置——项目手写 he
 
 `timeline` 按 ID 聚合阶段事实，操作级 Start / Finish 可独立省略。
 
-```text
-timeline/
-├── recorder.go、writer.go     # 事实录制、计时与独立写入；不依赖 manager
-├── model/                    # 录制与存储共享的值类型、校验及快照编码
-├── manager/                  # 六个 ID 入口，统一缓存加载与 Store 保存策略
-├── store/                    # Store 契约、文档编码/合并/投影与 MemoryStore
-│   └── sqlstore/             # 复用应用 SQL 连接池的持久化实现
-└── gospan/                   # 有封存边界的进程内实现
-```
-
-依赖方向为 `manager → timeline → store → model`，`sqlstore → store`。
-核心 Recorder 通过 Writer 契约提交事实；共享值类型通过 `timeline.Stage`、`timeline.Snapshot`
-等别名对外提供，存储包不依赖录制或管理生命周期。
-Manager 直接持有 `jellydator/ttlcache/v3` 和 Store；最大数量与 LRU 控制缓存驻留，保存周期独立配置。
-miss 从 Store 恢复，写入缺失 ID 才创建；Read 不强制落盘，Flush 是显式检查点。
-保存采用尽力而为策略：淘汰时尝试最终保存，失败报告后释放缓冲；Finish 只记录业务结果。
-ID 的业务含义、执行调度与数据库保留期归应用。详细契约见 `docs/timeline.md`。
+根包收口公开入口与类型别名；`manager` 拥有录制和管理生命周期，`cache` 统一缓存与保存，
+`store` / `model` 承载持久化契约和值模型。下层包不反向依赖根包。
+ID、业务结果与快照导出归调用方，缓存采用尽力而为语义；使用默认 NoopStore 时，完整事实仅保存在缓存。
+目录树、生命周期与一致性契约见 [操作时间线](docs/timeline.md)。
 
 ## 关键约定
 

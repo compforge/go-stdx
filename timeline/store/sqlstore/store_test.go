@@ -346,10 +346,10 @@ func TestSQLActorReferencesArePayloadLocal(t *testing.T) {
 	}
 	conflicting := later
 	conflicting.Actor = actorB
-	if err := tl.Record(conflicting); err != nil {
-		t.Fatal(err)
-	}
-	if err := tl.Flush(ctx); !errors.Is(err, timelinestore.ErrConflict) {
+	if err := tl.Record(conflicting); !errors.Is(err, timelinestore.ErrConflict) {
 		t.Fatalf("lost actor conflict: %v", err)
+	}
+	if err := tl.Flush(ctx); err != nil {
+		t.Fatal(err)
 	}
 }

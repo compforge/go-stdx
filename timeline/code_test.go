@@ -88,11 +88,12 @@ func TestRecordedCodeIsImmutable(t *testing.T) {
 					t.Fatalf("recorded code: %+v, %v", snapshot, err)
 				}
 				input.Code = "DifferentCode"
-				if err := tl.Record(input); err != nil {
-					t.Fatal(err)
-				}
-				if err := tl.Flush(context.Background()); !errors.Is(err, timelinestore.ErrConflict) {
+				if err := tl.Record(input); !errors.Is(err, timelinestore.ErrConflict) {
 					t.Fatalf("changed terminal code accepted: %v", err)
+				}
+				snapshot, err = tl.Snapshot(context.Background())
+				if err != nil || len(snapshot.Stages) != 1 || snapshot.Stages[0].Code != "Observed" {
+					t.Fatalf("rejected code changed facts: %+v %v", snapshot, err)
 				}
 			})
 		})

@@ -1,131 +1,53 @@
+// Package manager owns timeline recording, cache coordination and persistence lifecycles.
 package manager
 
 import (
 	"context"
 	"errors"
-	"log/slog"
-	"sync"
-	"sync/atomic"
-	"time"
 
-	"github.com/compforge/go-stdx/timeline"
+	"github.com/compforge/go-stdx/timeline/cache"
 	"github.com/compforge/go-stdx/timeline/store"
-	"github.com/jellydator/ttlcache/v3"
-	"golang.org/x/sync/singleflight"
 )
 
-var ErrClosed = errors.New("timeline manager: shut down")
-var ErrBufferFull = errors.New("timeline manager: pending save limit exceeded")
+var ErrClosed = cache.ErrClosed
+var ErrBufferFull = cache.ErrBufferFull
 var ErrStageNotFound = errors.New("timeline manager: stage not found")
 var ErrAmbiguousStage = errors.New("timeline manager: multiple running stages share this name")
 
-// Config bounds cache capacity and backend calls. Zero fields select defaults.
-type Config struct {
-	MaxTimelines        int           // default 1024 cached documents
-	FlushInterval       time.Duration // default 1s between background saves
-	ExportTimeout       time.Duration // default 5s for each Store read/merge
-	MaxPendingTimelines int           // default 1024, including evicted documents awaiting a final save
-	MaxPendingUpdates   int           // default 1024 per document, before coalescing a save batch
-	// OnError reports save failures outside locks. It must return promptly and
-	// must not call Shutdown. Default: slog with the timeline ID, without data.
-	OnError func(id string, err error)
-}
+type Config = cache.Config
+type Stats = cache.Stats
 
-// Manager owns the policy joining ttlcache and Store. Writes acknowledge
-// memory acceptance; Flush is the optional persistence checkpoint. This is a
-// best-effort cache, without durable delivery or cross-process consistency.
-// spec: Eviction schedules one final bounded save. Failure is reported and the
-// buffer is released, so an unavailable Store cannot pin memory indefinitely.
+// Manager joins ID-based recording with the shared loading and saving cache.
+// Writes acknowledge memory acceptance; Flush optionally waits for Store submission.
 type Manager struct {
-	store        store.Store
-	config       Config
-	items        *ttlcache.Cache[string, *entry]
-	loads        singleflight.Group
-	mu           sync.Mutex // lifecycle and pending membership; never held during Store IO
-	pending      map[*entry]struct{}
-	closed       bool
-	ctx          context.Context
-	cancel       context.CancelFunc
-	done         chan struct{}
-	wake         chan struct{}
-	stopEviction func()
-	shutdownMu   sync.Mutex
-	dropped      atomic.Uint64
-	rejected     atomic.Uint64
+	cache *cache.Cache
+	store store.Store
 }
 
-type entry struct {
-	mu         sync.Mutex
-	id         string
-	doc        store.Document
-	exists     bool
-	updates    []store.Update
-	batch      *store.Update // immutable until a save succeeds or is deliberately dropped
-	batchCount int
-	evicted    bool
-	err        error
-	lossErr    error
-	lost       bool
-	gate       chan struct{}
-}
-
+// New starts a Manager. A nil backend selects NoopStore for cache-only recording.
 func New(backend store.Store, config Config) (*Manager, error) {
 	if backend == nil {
-		return nil, errors.New("timeline manager: nil Store")
+		backend = store.NewNoopStore()
 	}
-	if config.MaxTimelines < 0 || config.FlushInterval < 0 || config.ExportTimeout < 0 || config.MaxPendingTimelines < 0 || config.MaxPendingUpdates < 0 {
-		return nil, errors.New("timeline manager: negative configuration")
+	c, err := cache.New(backend, config)
+	if err != nil {
+		return nil, err
 	}
-	if config.MaxTimelines == 0 {
-		config.MaxTimelines = 1024
-	}
-	if config.FlushInterval == 0 {
-		config.FlushInterval = time.Second
-	}
-	if config.ExportTimeout == 0 {
-		config.ExportTimeout = 5 * time.Second
-	}
-	if config.MaxPendingTimelines == 0 {
-		config.MaxPendingTimelines = 1024
-	}
-	if config.MaxPendingUpdates == 0 {
-		config.MaxPendingUpdates = 1024
-	}
-	if config.OnError == nil {
-		config.OnError = func(id string, err error) { slog.Error("timeline save failed", "timeline_id", id, "error", err) }
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	c := &Manager{store: backend, config: config, pending: make(map[*entry]struct{}), ctx: ctx, cancel: cancel, done: make(chan struct{}), wake: make(chan struct{}, 1)}
-	c.items = ttlcache.New(ttlcache.WithCapacity[string, *entry](uint64(config.MaxTimelines)))
-	c.stopEviction = c.items.OnEviction(func(_ context.Context, _ ttlcache.EvictionReason, item *ttlcache.Item[string, *entry]) {
-		e := item.Value()
-		e.mu.Lock()
-		e.evicted = true
-		e.mu.Unlock()
-		select {
-		case c.wake <- struct{}{}:
-		default:
-		}
-	})
-	go c.run()
-	return c, nil
+	return &Manager{cache: c, store: backend}, nil
 }
 
 // NewWriter creates an actor-scoped recorder. Its writes use the same cache;
 // recording may load Store on a miss. Keep each stage owned by one recorder.
-func (m *Manager) NewWriter(id string, actor timeline.Actor) (*timeline.Recorder, error) {
-	m.mu.Lock()
-	closed := m.closed
-	m.mu.Unlock()
-	if closed {
+func (m *Manager) NewWriter(id string, actor Actor) (*Handle, error) {
+	if m.cache.Closed() {
 		return nil, ErrClosed
 	}
-	return timeline.New(id, timeline.WithStore(m.store), timeline.WithActor(actor), timeline.WithWriter(&writer{manager: m, id: id}))
+	return NewHandle(id, WithStore(m.store), WithActor(actor), withWriter(&writer{manager: m, id: id}))
 }
-func (m *Manager) apply(id string, fn func(*timeline.Recorder, store.Document) error) error {
-	return m.update(context.Background(), id, func(doc store.Document) (store.Update, error) {
+func (m *Manager) apply(id string, fn func(*recorder, store.Document) error) error {
+	return m.cache.Update(context.Background(), id, func(doc store.Document) (store.Update, error) {
 		w := &captureWriter{}
-		r, err := timeline.Restore(doc, timeline.WithStore(m.store), timeline.WithWriter(w))
+		r, err := restoreRecorder(doc, WithStore(m.store), withWriter(w))
 		if err != nil {
 			return store.Update{}, err
 		}

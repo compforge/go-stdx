@@ -1,4 +1,4 @@
-package manager
+package cache
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"github.com/compforge/go-stdx/timeline/store"
 )
 
-func (c *Manager) entries(id string) []*entry {
+func (c *Cache) entries(id string) []*entry {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	result := make([]*entry, 0, len(c.pending))
@@ -27,7 +27,7 @@ func permanent(err error) bool {
 
 // save freezes each submitted batch until its outcome is known. Later writes
 // stay separate: an ambiguous failure may already have committed in Store.
-func (c *Manager) save(ctx context.Context, e *entry) (result error) {
+func (c *Cache) save(ctx context.Context, e *entry) (result error) {
 	report := false
 	defer func() {
 		if report {
@@ -103,7 +103,7 @@ func (c *Manager) save(ctx context.Context, e *entry) (result error) {
 	return e.lossErr
 }
 
-func (c *Manager) run() {
+func (c *Cache) run() {
 	defer close(c.done)
 	ticker := time.NewTicker(c.config.FlushInterval)
 	defer ticker.Stop()
@@ -123,12 +123,30 @@ func (c *Manager) run() {
 	}
 }
 
-// Flush waits for currently pending local facts. It neither discovers other
-// processes' writes nor promises delivery of facts previously dropped.
-func (c *Manager) Flush(ctx context.Context) error { return c.flush(ctx, "") }
-func (c *Manager) FlushID(ctx context.Context, id string) error {
+// Flush checkpoints currently pending local facts for id when wait is true.
+// With wait=false it wakes the shared save worker and returns without waiting
+// for Store IO; failures are reported through OnError. The worker may also save
+// other pending IDs. Neither mode discovers other processes' writes or promises
+// delivery of facts previously dropped.
+// +spec=`Nonblocking Flush coalesces worker wakeups; accepted saves use the Manager lifetime and IO timeout independently of the caller context.`
+func (c *Cache) Flush(ctx context.Context, id string, wait bool) error {
 	if id == "" {
 		return model.ErrEmptyID
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !wait {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.closed {
+			return ErrClosed
+		}
+		select {
+		case c.wake <- struct{}{}:
+		default:
+		}
+		return nil
 	}
 	err := c.flush(ctx, id)
 	if item := c.items.Get(id); item != nil {
@@ -139,7 +157,7 @@ func (c *Manager) FlushID(ctx context.Context, id string) error {
 	}
 	return err
 }
-func (c *Manager) flush(ctx context.Context, id string) error {
+func (c *Cache) flush(ctx context.Context, id string) error {
 	var result error
 	for _, e := range c.entries(id) {
 		if err := c.save(ctx, e); err != nil {
@@ -152,7 +170,7 @@ func (c *Manager) flush(ctx context.Context, id string) error {
 // Shutdown stops loading/writing, cancels background IO, then attempts to drain
 // with the caller's context. Failed final saves are counted and released. Reads
 // remain available directly from Store while the application keeps it open.
-func (c *Manager) Shutdown(ctx context.Context) error {
+func (c *Cache) Shutdown(ctx context.Context) error {
 	c.mu.Lock()
 	c.closed = true
 	c.cancel()
@@ -165,7 +183,7 @@ func (c *Manager) Shutdown(ctx context.Context) error {
 	c.shutdownMu.Lock()
 	defer c.shutdownMu.Unlock()
 	c.stopEviction()
-	err := c.Flush(ctx)
+	err := c.flush(ctx, "")
 	for _, e := range c.entries("") {
 		e.mu.Lock()
 		c.dropped.Add(uint64(e.batchCount + len(e.updates)))
@@ -191,7 +209,7 @@ type Stats struct {
 	RejectedUpdates  uint64
 }
 
-func (c *Manager) Stats() Stats {
+func (c *Cache) Stats() Stats {
 	entries := c.entries("")
 	s := Stats{CachedTimelines: c.items.Len(), PendingTimelines: len(entries), DroppedUpdates: c.dropped.Load(), RejectedUpdates: c.rejected.Load()}
 	for _, e := range entries {

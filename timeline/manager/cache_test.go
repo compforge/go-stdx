@@ -21,7 +21,7 @@ func TestPersistedStageHandleSurvivesEviction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = m.Flush(ctx); err != nil {
+	if err = m.Flush(ctx, "task", true); err != nil {
 		t.Fatal(err)
 	}
 	before, err := backend.Read(ctx, "task")
@@ -35,7 +35,7 @@ func TestPersistedStageHandleSurvivesEviction(t *testing.T) {
 	if err = stage.End(nil); err != nil {
 		t.Fatal(err)
 	}
-	if err = m.Flush(ctx); err != nil {
+	if err = m.Flush(ctx, "task", true); err != nil {
 		t.Fatal(err)
 	}
 	after, err := backend.Read(ctx, "task")
@@ -66,7 +66,7 @@ func TestBoundariesAndNamedStageRestoreAfterCapacityEviction(t *testing.T) {
 	if err := m.Finish("task", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Flush(ctx); err != nil {
+	if err := m.Flush(ctx, "task", true); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := backend.Read(ctx, "task")
@@ -125,7 +125,7 @@ func TestEvictionAttemptsFinalSaveAndRestores(t *testing.T) {
 	if err = stage.End(nil); err != nil {
 		t.Fatal(err)
 	}
-	if err = m.Flush(context.Background()); err != nil {
+	if err = m.Flush(context.Background(), "task", true); err != nil {
 		t.Fatal(err)
 	}
 	doc, err := backend.Read(context.Background(), "task")
@@ -166,7 +166,7 @@ func TestPermanentSaveConflictRetiresAndIsReported(t *testing.T) {
 	if _, err := m.Begin("conflict", "work"); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.FlushID(context.Background(), "conflict"); !errors.Is(err, timelinestore.ErrConflict) {
+	if err := m.Flush(context.Background(), "conflict", true); !errors.Is(err, timelinestore.ErrConflict) {
 		t.Fatal(err)
 	}
 	if got := m.Stats(); got.PendingTimelines != 0 || got.RejectedUpdates != 1 {
@@ -179,7 +179,7 @@ func TestPermanentSaveConflictRetiresAndIsReported(t *testing.T) {
 	if _, err = m.Begin("healthy", "work"); err != nil {
 		t.Fatal(err)
 	}
-	if err = m.FlushID(context.Background(), "healthy"); err != nil {
+	if err = m.Flush(context.Background(), "healthy", true); err != nil {
 		t.Fatal(err)
 	}
 }

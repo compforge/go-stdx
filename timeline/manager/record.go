@@ -1,4 +1,4 @@
-package timeline
+package manager
 
 import (
 	"github.com/compforge/go-stdx/timeline/model"
@@ -7,7 +7,7 @@ import (
 
 // Record buffers an already completed interval, without inventing timestamps or
 // an executor identity. Use a stable ID to retry the same external fact.
-func (t *Recorder) Record(stage Stage) error {
+func (t *recorder) Record(stage Stage) error {
 	if err := model.ValidateCompleted(t.id, stage); err != nil {
 		return err
 	}
