@@ -4,7 +4,7 @@
 
 一条 Timeline 对应一次业务操作。不同进程可以构造绑定相同 ID 的本地句柄，独立记录
 stage，通过共享 Store 汇总。ID 的生成、业务含义和唯一性范围归 caller；SDK 不解析
-sandbox、conversation 等业务概念。New 只构造句柄，不查询远端，不重置已有操作。
+sandbox、conversation 等业务概念。句柄构造不查询远端，也不重置已有操作。
 
 Stage 是一段实际工作或等待的纯数据；StageHandle 是 Begin 返回的工作接口。
 叶子 stage 是一个组件内单一执行流的基本记录单位，由该组件在同一 goroutine 中
@@ -42,7 +42,7 @@ WithEndAttributes 记录，重复 key 以后写为准。属性在记录调用返
 ## 协作流程
 
 协调方构造句柄并调用 Start，记录业务开始和操作类型。异步组件只需业务 ID、同一
-Store 的配置和可选 Actor，就能构造自己的句柄。普通函数可以直接接收 Timeline；
+Store 的配置和可选 Actor，就能通过默认 Manager 的 For 入口构造自己的句柄。普通函数可以直接接收 Timeline；
 NewContext / FromContext 仅是可选的传递便利。
 
 Begin 不需要 context，WithParent 显式指定父阶段，StageHandle.ID 返回阶段身份。
@@ -95,7 +95,8 @@ Manager 只强引用待提交句柄，提交完毕后释放引用。业务仍持
 
 使用约束：
 
-- 服务启动时 NewManager，业务通过 Manager.New 按 ID 创建独立句柄。WithActor 可用；
+- 服务启动时 NewManager 并安装默认实例，业务通过 For 按 ID 获取独立句柄；需要显式隔离时
+  使用 Manager.New。WithActor 可用；
   Store 由 Manager 统一提供。Start、Snapshot、Finish 保留显式提交及采集的语义。
 - Manager.Flush 提交调用时已待提交的本地句柄，单个 Recorder.Flush 只提交本句柄。
   两者都不能排空远端进程，也不等待无限产生的新记录。
@@ -110,6 +111,48 @@ Manager 只强引用待提交句柄，提交完毕后释放引用。业务仍持
 
 默认提供最终可见性：业务完成后记录仍可能稍晚到达 Store。需要跨进程严格交接时，执行方
 仍须确认 Flush 成功后发布业务完成。内存缓冲不提供进程崩溃后的恢复保证。
+
+## 全局入口与默认 Manager
+
+应用启动时创建一个 Manager 并通过 `SetDefaultManager` 安装为进程默认值。
+业务组件调用 `For(id)` 获取写入句柄，使用阶段接口记录事实，无需传递 Manager。
+全局入口只保存默认 Manager 的引用；它不按业务 ID 缓存句柄，也不启动额外的后台循环。
+同一 ID 的多个句柄通过 Store 汇入同一文档，各自保留记录者身份与完成权限。
+
+`For` 只创建本地写入句柄，不读取文档、不开始业务操作。首次创建方调用 Start / Finish，
+其它组件可以随时按 ID 补充阶段。`Read(ctx, id)` 只读取已经持久化的事实；
+需要先提交本句柄数据时使用 Recorder.Snapshot。读取不代表其它句柄或副本已经全部提交。
+
+默认实例的安装与资源生命周期分开：SetDefaultManager 返回之前的默认实例，供测试恢复，
+不自动关闭任何 Manager。切换默认值只影响后续 For / Read，已取得的句柄仍归原 Manager。
+退出时先停止并等待业务写入方，再使用独立的限时 context 调用 Manager.Shutdown，
+最后由应用关闭 Store。Shutdown 后仍可通过 Read 查询尚未关闭的 Store。
+
+未安装默认实例时 For / Read 返回 ErrNoDefaultManager，不隐式启动 worker 或创建内存存储。
+需要隔离的测试或嵌入式调用可直接使用显式 Manager；`New` 始终构造独立句柄，行为不受
+默认 Manager 影响。修改全局默认值的测试应串行执行，并在结束时恢复。
+
+```go
+// 启动入口：创建和安装，NewManager 已启动后台循环。
+m, err := timeline.NewManager(store, timeline.ManagerConfig{})
+if err != nil {
+    return err
+}
+timeline.SetDefaultManager(m)
+
+// 业务组件：只感知 ID 和句柄。这里只向已有业务操作补充阶段。
+tl, err := timeline.For(operationID)
+if err != nil {
+    return err
+}
+stage := tl.Begin("prepare_files")
+stage.End(nil)
+
+// 退出入口：先等业务写入方退出，再排空，最后关闭 Store。
+shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+return m.Shutdown(shutdownCtx)
+```
 
 ## 采集范围
 

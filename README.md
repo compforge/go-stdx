@@ -47,7 +47,8 @@ Used by [case-code-review](https://github.com/qiankunli/case-code-review), [host
 ## Operation timelines
 
 Record one operation across concurrent components and processes using its business ID.
-Each process configures a Manager against the same Store and obtains local handles. Stages retain their
+Each process installs a default Manager against the same Store; business components obtain
+local handles by ID with `timeline.For(id)`. Stages retain their
 own intervals, parent IDs, results, and optional executor identity; parallel work
 stays parallel in the snapshot.
 
@@ -58,6 +59,7 @@ manager, err := timeline.NewManager(store, timeline.ManagerConfig{})
 if err != nil {
     return err
 }
+timeline.SetDefaultManager(manager)
 // At service shutdown, after producers stop:
 defer func() {
     cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -67,8 +69,8 @@ defer func() {
     }
 }()
 
-// Coordinator: New binds the ID; Start records the business start boundary.
-tl, err := manager.New(sandboxID)
+// Coordinator: For binds the ID; Start records the business start boundary.
+tl, err := timeline.For(sandboxID)
 if err != nil {
     return err
 }
@@ -76,8 +78,8 @@ if err := tl.Start(ctx, "sandbox_start"); err != nil {
     return err // recording error; the application chooses its policy
 }
 
-// Another component uses its local Manager, without a remote Open call.
-worker, err := manager.New(sandboxID,
+// Another component needs only the ID; the global entry uses this process's Manager.
+worker, err := timeline.For(sandboxID,
     timeline.WithActor(timeline.Actor{Name: podName}), // optional
 )
 if err != nil {
@@ -113,7 +115,10 @@ application's migrations before use; see [storage and lifecycle](docs/timeline.m
 The application owns connection pools, IO budgets and retention. SQLite is used
 only by the storage integration tests; applications choose their database driver.
 
-Without `WithStore`, New uses a private in-memory store. A shared
+`timeline.Read(ctx, id)` reads persisted records without flushing writers. `For` and `Read`
+return `ErrNoDefaultManager` before setup. For isolated integrations, call `manager.New(id)`
+directly; `timeline.New` always constructs a standalone handle, independent of the default.
+Without `WithStore`, `New` uses a private in-memory store. A shared
 `NewMemoryStore()` joins handles in one process. The optional
 `timeline/gospan` backend records into a local projection and seals its writer at
 Finish; it does not aggregate across replicas. Its Registry remains process-local.
@@ -128,7 +133,8 @@ omitting it does not change recording. Document and Snapshot JSON deduplicate ac
 into a payload-local `actors` table with 1-based stage `actor_ref` values; decoding
 restores full Actor values. Standalone Stage JSON remains self-contained.
 
-See the [executable shared-store example](timeline/shared_example_test.go) and
+See the [global-entry example](timeline/global_example_test.go),
+[explicit shared-store example](timeline/shared_example_test.go), and
 [lifecycle, storage and collection contract](docs/timeline.md).
 
 ## License

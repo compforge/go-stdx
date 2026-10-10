@@ -118,6 +118,13 @@ func (m *Manager) New(id string, options ...Option) (*Recorder, error) {
 	return r, nil
 }
 
+// Read returns the Store's current document without flushing pending handles.
+// It remains available after Shutdown while the application keeps the Store
+// open; Shutdown controls writers, not the lifetime of durable data.
+func (m *Manager) Read(ctx context.Context, id string) (Document, error) {
+	return m.store.Read(ctx, id)
+}
+
 // schedule runs while the recorder is locked. The worker never holds m.mu while
 // acquiring a recorder lock, so recording cannot wait for database IO.
 func (m *Manager) schedule(r *Recorder) error {
