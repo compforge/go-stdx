@@ -1,4 +1,4 @@
-package timeline
+package manager
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/compforge/go-stdx/timeline/internal/cache"
+	"github.com/compforge/go-stdx/timeline/cache"
 	"github.com/compforge/go-stdx/timeline/model"
 	"github.com/compforge/go-stdx/timeline/store"
 	"github.com/google/uuid"

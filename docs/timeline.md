@@ -17,6 +17,32 @@ Stage 是一段工作或等待，保留身份、名称、父阶段、实际区�
 Snapshot 是一次读取的独立视图，Document 是持久化的最新事实。前者带有捕获时间和采集状态，
 后者保存合并修订号。业务可以直接 JSON 序列化快照，无需再定义 DTO。
 
+## 目录与职责
+
+```text
+timeline/
+├── global.go                 # Begin / End / Record / Read / Start / Finish 入口
+├── setup.go                  # Manager 创建入口与配置类型别名
+├── timeline.go               # 公开契约与值类型别名
+├── handle.go                 # 可选的对象式 New / Handle 入口
+├── context.go、options.go    # Context 辅助入口与录制选项
+├── manager/                  # 录制与管理实现，共用一个默认 Manager
+│   ├── manager*.go           # 按 ID 编排、阶段句柄及缓存协调
+│   ├── global.go             # 默认实例选择与 ID 入口委托
+│   ├── handle.go             # 对象式录制句柄
+│   ├── recorder.go、record.go、restore.go # 事实构造、计时、修订号与恢复
+│   └── writer.go             # 录制事实接入统一缓存
+├── cache/                    # 缓存、加载、合并与后台保存
+├── model/                    # Stage / Snapshot 等值类型与查询、编码
+├── store/                    # Store 契约与 NoopStore / MemoryStore
+│   └── sqlstore/             # SQL 持久化实现
+└── gospan/                   # 有封存边界的进程内实现
+```
+
+主路径依赖方向为 `timeline → manager → cache → store → model`。根包收口使用方式，
+manager 拥有录制状态与管理生命周期，cache 统一处理内存和 Store 的同步；manager 与 cache
+均不依赖根包。根包与 manager 的入口共用同一个默认实例。
+
 ## 使用流程
 
 应用启动时创建 `timeline.Manager`（`timeline.NewManager`）并通过 `timeline.SetDefault` 安装默认实例。

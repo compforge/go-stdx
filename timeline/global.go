@@ -2,64 +2,25 @@ package timeline
 
 import (
 	"context"
-	"errors"
-	"sync/atomic"
+
+	"github.com/compforge/go-stdx/timeline/manager"
 )
 
-var ErrNoDefault = errors.New("timeline manager: no default installed")
-var defaultManager atomic.Pointer[Manager]
+var ErrNoDefault = manager.ErrNoDefault
 
 // SetDefault installs the process Manager and returns the previous one. Install
 // before producers start; replacement neither moves state nor shuts down either
 // instance. Tests changing the default must run serially and restore it.
-func SetDefault(m *Manager) *Manager { return defaultManager.Swap(m) }
-func current() (*Manager, error) {
-	m := defaultManager.Load()
-	if m == nil {
-		return nil, ErrNoDefault
-	}
-	return m, nil
-}
-
+func SetDefault(m *Manager) *Manager { return manager.SetDefault(m) }
 func Begin(id, name string, options ...StageOption) (StageHandle, error) {
-	m, err := current()
-	if err != nil {
-		return nil, err
-	}
-	return m.Begin(id, name, options...)
+	return manager.Begin(id, name, options...)
 }
-func End(id, name string, stageErr error, options ...EndOption) error {
-	m, err := current()
-	if err != nil {
-		return err
-	}
-	return m.End(id, name, stageErr, options...)
+func End(id, name string, err error, options ...EndOption) error {
+	return manager.End(id, name, err, options...)
 }
-func Record(id string, stage Stage) error {
-	m, err := current()
-	if err != nil {
-		return err
-	}
-	return m.Record(id, stage)
-}
-func Read(ctx context.Context, id string) (Snapshot, error) {
-	m, err := current()
-	if err != nil {
-		return Snapshot{}, err
-	}
-	return m.Read(ctx, id)
-}
+func Record(id string, stage Stage) error                   { return manager.Record(id, stage) }
+func Read(ctx context.Context, id string) (Snapshot, error) { return manager.Read(ctx, id) }
 func Start(id, operation string, attributes ...Attribute) error {
-	m, err := current()
-	if err != nil {
-		return err
-	}
-	return m.Start(id, operation, attributes...)
+	return manager.Start(id, operation, attributes...)
 }
-func Finish(id string, operationErr error) error {
-	m, err := current()
-	if err != nil {
-		return err
-	}
-	return m.Finish(id, operationErr)
-}
+func Finish(id string, err error) error { return manager.Finish(id, err) }

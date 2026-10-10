@@ -1,8 +1,8 @@
-package timeline
+package manager
 
 import (
 	"context"
-	"github.com/compforge/go-stdx/timeline/internal/cache"
+	"github.com/compforge/go-stdx/timeline/cache"
 	"github.com/compforge/go-stdx/timeline/store"
 )
 

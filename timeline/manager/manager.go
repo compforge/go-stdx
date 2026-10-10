@@ -1,36 +1,67 @@
-// Package manager forwards to timeline's Manager and global entry points.
-// New integrations use the timeline root package.
+// Package manager owns timeline recording, cache coordination and persistence lifecycles.
 package manager
 
 import (
 	"context"
-	"github.com/compforge/go-stdx/timeline"
+	"errors"
+
+	"github.com/compforge/go-stdx/timeline/cache"
 	"github.com/compforge/go-stdx/timeline/store"
 )
 
-type Manager = timeline.Manager
-type Config = timeline.Config
-type Stats = timeline.Stats
+var ErrClosed = cache.ErrClosed
+var ErrBufferFull = cache.ErrBufferFull
+var ErrStageNotFound = errors.New("timeline manager: stage not found")
+var ErrAmbiguousStage = errors.New("timeline manager: multiple running stages share this name")
 
-var ErrClosed = timeline.ErrClosed
-var ErrBufferFull = timeline.ErrBufferFull
-var ErrStageNotFound = timeline.ErrStageNotFound
-var ErrAmbiguousStage = timeline.ErrAmbiguousStage
-var ErrNoDefault = timeline.ErrNoDefault
+type Config = cache.Config
+type Stats = cache.Stats
 
+// Manager joins ID-based recording with the shared loading and saving cache.
+// Writes acknowledge memory acceptance; Flush optionally waits for Store submission.
+type Manager struct {
+	cache *cache.Cache
+	store store.Store
+}
+
+// New starts a Manager. A nil backend selects NoopStore for cache-only recording.
 func New(backend store.Store, config Config) (*Manager, error) {
-	return timeline.NewManager(backend, config)
+	if backend == nil {
+		backend = store.NewNoopStore()
+	}
+	c, err := cache.New(backend, config)
+	if err != nil {
+		return nil, err
+	}
+	return &Manager{cache: c, store: backend}, nil
 }
-func SetDefault(m *Manager) *Manager { return timeline.SetDefault(m) }
-func Begin(id, name string, options ...timeline.StageOption) (timeline.StageHandle, error) {
-	return timeline.Begin(id, name, options...)
+
+// NewWriter creates an actor-scoped recorder. Its writes use the same cache;
+// recording may load Store on a miss. Keep each stage owned by one recorder.
+func (m *Manager) NewWriter(id string, actor Actor) (*Handle, error) {
+	if m.cache.Closed() {
+		return nil, ErrClosed
+	}
+	return NewHandle(id, WithStore(m.store), WithActor(actor), withWriter(&writer{manager: m, id: id}))
 }
-func End(id, name string, err error, options ...timeline.EndOption) error {
-	return timeline.End(id, name, err, options...)
+func (m *Manager) apply(id string, fn func(*recorder, store.Document) error) error {
+	return m.cache.Update(context.Background(), id, func(doc store.Document) (store.Update, error) {
+		w := &captureWriter{}
+		r, err := restoreRecorder(doc, WithStore(m.store), withWriter(w))
+		if err != nil {
+			return store.Update{}, err
+		}
+		if err = fn(r, doc); err != nil {
+			return store.Update{}, err
+		}
+		return w.update, nil
+	})
 }
-func Record(id string, stage timeline.Stage) error                   { return timeline.Record(id, stage) }
-func Read(ctx context.Context, id string) (timeline.Snapshot, error) { return timeline.Read(ctx, id) }
-func Start(id, operation string, attributes ...timeline.Attribute) error {
-	return timeline.Start(id, operation, attributes...)
-}
-func Finish(id string, err error) error { return timeline.Finish(id, err) }
+
+// Each operation emits at most one fact. Manager.update serializes construction
+// and admission, so a rejected write cannot advance the cached stage revision.
+type captureWriter struct{ update store.Update }
+
+func (w *captureWriter) Write(u store.Update) error { w.update = u; return nil }
+func (*captureWriter) RecordError(error)            {}
+func (*captureWriter) Flush(context.Context) error  { return nil }
