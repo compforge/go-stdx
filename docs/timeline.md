@@ -106,6 +106,9 @@ Store 提供原子 Merge、单 ID Read、定向 MGet，以及按更新时间过�
 MGet 缺失项省略，返回顺序不作保证；Latest 使用 `updated_at > after`，按
 `updated_at DESC, id DESC` 排序并截断到 limit。非正 limit 返回空结果。
 
+Store 可扩展 Redis 后端，配合现有进程内 cache，有望降低跨实例同步的读写延迟和 SQL
+数据库压力；当前尚未提供 Redis 实现，实际性能收益需按负载验证，后端仍需满足原子合并与批量查询契约。
+
 SQL Store 复用应用的 database/sql 连接池，一条操作一行，以行版本 CAS 防止并发整文档
 覆盖。CAS 竞争时重新读入并合并各 Actor 的记录。示例 MySQL 表：
 
