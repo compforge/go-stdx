@@ -10,7 +10,7 @@ var ErrNoDefaultManager = errors.New("timeline: no default Manager installed")
 
 var defaultManager atomic.Pointer[Manager]
 
-// SetDefaultManager installs the process default used by For and Read, returning
+// SetDefaultManager installs the process default used by Start, For and Read, returning
 // the previous default. Install it before starting business producers. Passing
 // nil clears the default. Replacement is concurrency-safe but does not shut down
 // either Manager or rebind existing handles; their owner controls their lifetime.
@@ -30,6 +30,20 @@ func For(id string, options ...Option) (*Recorder, error) {
 		return nil, ErrNoDefaultManager
 	}
 	return manager.New(id, options...)
+}
+
+// Start creates a coordinator handle through the default Manager and records
+// the operation start boundary. The returned handle owns Finish; other writers
+// use For to contribute stages. Options have the same meaning as in For.
+// If construction fails, the handle is nil. If recording or flushing fails, the
+// handle is returned with the error: retry transient persistence failures with
+// its Flush method to preserve the original start boundary.
+func Start(ctx context.Context, id, operation string, options ...Option) (*Recorder, error) {
+	recorder, err := For(id, options...)
+	if err != nil {
+		return nil, err
+	}
+	return recorder, recorder.Start(ctx, operation)
 }
 
 // Read reads the default Manager's persisted document, without flushing local

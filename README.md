@@ -48,8 +48,9 @@ Used by [case-code-review](https://github.com/qiankunli/case-code-review), [host
 
 Record one operation across concurrent components and processes using its business ID.
 Each process installs a default Manager against the same Store; business components obtain
-local handles by ID with `timeline.For(id)`. Stages retain their
-own intervals, parent IDs, results, and optional executor identity; parallel work
+coordinator handles with `timeline.Start(ctx, id, operation)` and participant handles
+with `timeline.For(id)`. Stages retain their own intervals, parent IDs, results,
+and optional executor identity; parallel work
 stays parallel in the snapshot.
 
 ```go
@@ -69,17 +70,14 @@ defer func() {
     }
 }()
 
-// Coordinator: For binds the ID; Start records the business start boundary.
-tl, err := timeline.For(sandboxID)
+// Coordinator: create a handle and record the business start boundary.
+tl, err := timeline.Start(ctx, operationID, "sandbox_start")
 if err != nil {
-    return err
-}
-if err := tl.Start(ctx, "sandbox_start"); err != nil {
     return err // recording error; the application chooses its policy
 }
 
 // Another component needs only the ID; the global entry uses this process's Manager.
-worker, err := timeline.For(sandboxID,
+worker, err := timeline.For(operationID,
     timeline.WithActor(timeline.Actor{Name: podName}), // optional
 )
 if err != nil {
@@ -103,6 +101,9 @@ snapshot, captureErr := tl.Finish(ctx, operationErr)
 // json.Marshal(snapshot) persists data directly; no separate application DTO.
 ```
 
+If `Start` returns a non-nil handle with a persistence error, retry with that handle's
+`Flush(ctx)` to preserve the original start boundary.
+
 Background persistence is eventually visible. For a strict cross-process handoff,
 the producer can explicitly `Flush(ctx)` before publishing completion. Manager
 retains pending records even after business code discards a handle; it bounds
@@ -115,7 +116,7 @@ application's migrations before use; see [storage and lifecycle](docs/timeline.m
 The application owns connection pools, IO budgets and retention. SQLite is used
 only by the storage integration tests; applications choose their database driver.
 
-`timeline.Read(ctx, id)` reads persisted records without flushing writers. `For` and `Read`
+`timeline.Read(ctx, id)` reads persisted records without flushing writers. `Start`, `For` and `Read`
 return `ErrNoDefaultManager` before setup. For isolated integrations, call `manager.New(id)`
 directly; `timeline.New` always constructs a standalone handle, independent of the default.
 Without `WithStore`, `New` uses a private in-memory store. A shared

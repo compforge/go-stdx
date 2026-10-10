@@ -10,7 +10,7 @@ Go stdlib 扩展库，长期对标 Java 里 Guava 的位置——项目手写 he
 
 `timeline` 提供 Stage 纯数据、StageHandle 计时接口与 Record 完整补录，
 Manager 管理本地句柄的后台提交与排空，Store 负责持久化和读取。应用安装默认 Manager 后，
-业务可通过 `timeline.For(id)` / `Read(ctx, id)` 使用全局入口；实例生命周期仍由应用管理。不同进程通过同一业务 ID
+业务可通过 `timeline.Start(ctx, id, operation)` / `For(id)` / `Read(ctx, id)` 使用全局入口；实例生命周期仍由应用管理。不同进程通过同一业务 ID
 独立记录，由 Store 汇总。`timeline/sqlstore` 复用调用方 SQL 连接池。
 `timeline/gospan` 提供进程内记录实现，Registry 仅索引本地活跃实例。
 ID 的生成、业务含义和完成决策归调用方，公共接口不暴露

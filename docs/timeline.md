@@ -115,9 +115,13 @@ Manager 只强引用待提交句柄，提交完毕后释放引用。业务仍持
 ## 全局入口与默认 Manager
 
 应用启动时创建一个 Manager 并通过 `SetDefaultManager` 安装为进程默认值。
-业务组件调用 `For(id)` 获取写入句柄，使用阶段接口记录事实，无需传递 Manager。
+业务发起方调用 `Start(ctx, id, operation)` 一步创建句柄并记录开始边界；
+参与方调用 `For(id)` 获取写入句柄，使用阶段接口记录事实，无需传递 Manager。
 全局入口只保存默认 Manager 的引用；它不按业务 ID 缓存句柄，也不启动额外的后台循环。
 同一 ID 的多个句柄通过 Store 汇入同一文档，各自保留记录者身份与完成权限。
+
+`Start` 返回的句柄负责 Finish。构造失败时返回 nil 句柄；开始记录或提交失败时
+保留句柄并返回错误，暂时性存储故障通过该句柄 Flush 重试，沿用原开始边界。
 
 `For` 只创建本地写入句柄，不读取文档、不开始业务操作。首次创建方调用 Start / Finish，
 其它组件可以随时按 ID 补充阶段。`Read(ctx, id)` 只读取已经持久化的事实；
@@ -128,7 +132,7 @@ Manager 只强引用待提交句柄，提交完毕后释放引用。业务仍持
 退出时先停止并等待业务写入方，再使用独立的限时 context 调用 Manager.Shutdown，
 最后由应用关闭 Store。Shutdown 后仍可通过 Read 查询尚未关闭的 Store。
 
-未安装默认实例时 For / Read 返回 ErrNoDefaultManager，不隐式启动 worker 或创建内存存储。
+未安装默认实例时 Start / For / Read 返回 ErrNoDefaultManager，不隐式启动 worker 或创建内存存储。
 需要隔离的测试或嵌入式调用可直接使用显式 Manager；`New` 始终构造独立句柄，行为不受
 默认 Manager 影响。修改全局默认值的测试应串行执行，并在结束时恢复。
 
