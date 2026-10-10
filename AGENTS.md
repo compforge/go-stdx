@@ -9,7 +9,7 @@ Go stdlib 扩展库，长期对标 Java 里 Guava 的位置——项目手写 he
 子包镜像 stdlib 命名（`slicesx` / `stringsx` / `osx` / `ptrx` / `filepathx` / `tarx` / `shellx` / `randx` / `uuid`），调用点读起来像它扩展的那个标准库。一包一职责，包内保持小。
 
 `timeline` 提供 Stage 纯数据、StageHandle 计时接口与 Record 完整补录，
-共享 Store 与纯数据快照；不同进程通过同一业务 ID
+Manager 管理本地句柄的后台提交与排空，Store 负责持久化和读取；不同进程通过同一业务 ID
 独立记录，由 Store 汇总。`timeline/sqlstore` 复用调用方 SQL 连接池。
 `timeline/gospan` 提供进程内记录实现，Registry 仅索引本地活跃实例。
 ID 的生成、业务含义和完成决策归调用方，公共接口不暴露
