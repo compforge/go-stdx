@@ -104,8 +104,9 @@ for persistence. Use `m.Flush(ctx, id, true)` for an explicit persistence checkp
 or `m.Flush(ctx, id, false)` to wake the background save worker and return immediately;
 use Store directly when each operation must observe or update durable state.
 Use `Read(ctx, id, true)` to refresh from Store while retaining local pending changes.
-Stage identity is `(StageID, Actor)`: ID takes precedence over Name, and at least one
-actor field must be present. Different actors retain separate records; competing
+Stage identity is `(StageID, Actor)`: Actor is optional for single-process use;
+an empty Actor is the default executor. When supplied, ID takes precedence over Name.
+Different actors retain separate records; competing
 writes for the same actor use last accepted state, without a consistency guarantee.
 Snapshot methods include `Summary()`, `RunningStages()` and `LatestFailedStage()`.
 

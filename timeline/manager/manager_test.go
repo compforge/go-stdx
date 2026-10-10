@@ -26,9 +26,6 @@ func (s *managedStore) Merge(ctx context.Context, id string, u timelinestore.Upd
 
 func newManager(t *testing.T, store timelinestore.Store, config managed.Config) *managed.Manager {
 	t.Helper()
-	if config.Actor.Key() == "" {
-		config.Actor = timeline.Actor{Name: "test"}
-	}
 	if config.LoadInterval == 0 {
 		config.LoadInterval = time.Hour
 	}

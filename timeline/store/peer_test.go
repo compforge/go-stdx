@@ -14,7 +14,7 @@ func TestActorScopedIdentityAndLocalRevision(t *testing.T) {
 	at := time.Now().UTC()
 	base := model.Stage{ID: "same", Name: "work", StartedAt: at, Status: model.Running}
 	var doc store.Document
-	actors := []model.Actor{{ID: "a", Name: "original"}, {ID: "b"}, {Name: "a"}}
+	actors := []model.Actor{{}, {ID: "a", Name: "original"}, {ID: "b"}, {Name: "a"}}
 	for _, actor := range actors {
 		s := base
 		s.Actor = actor
@@ -24,7 +24,7 @@ func TestActorScopedIdentityAndLocalRevision(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(doc.Stages) != 3 {
+	if len(doc.Stages) != 4 {
 		t.Fatalf("actor namespaces collapsed: %+v", doc)
 	}
 	updated := base
@@ -32,7 +32,7 @@ func TestActorScopedIdentityAndLocalRevision(t *testing.T) {
 	updated.FinishedAt = at.Add(time.Second)
 	updated.Status = model.Failed
 	next, changed, err := store.MergeDocument("op", doc, store.Update{Stages: []store.StageUpdate{{Stage: updated, Revision: 1}}})
-	if err != nil || !changed || len(next.Stages) != 3 {
+	if err != nil || !changed || len(next.Stages) != 4 {
 		t.Fatalf("private revision rejected peer: %+v %v", next, err)
 	}
 	for _, s := range next.Stages {
@@ -43,10 +43,6 @@ func TestActorScopedIdentityAndLocalRevision(t *testing.T) {
 	repeated, changed, err := store.MergeDocument("op", next, store.Update{Stages: []store.StageUpdate{{Stage: updated, Revision: 200}}})
 	if err != nil || changed || !reflect.DeepEqual(next, repeated) {
 		t.Fatalf("revision-only retry changed state: %v %v", changed, err)
-	}
-	invalid := base
-	if _, _, err := store.MergeDocument("op", next, store.Update{Stages: []store.StageUpdate{{Stage: invalid}}}); err == nil {
-		t.Fatal("empty actor admitted")
 	}
 }
 

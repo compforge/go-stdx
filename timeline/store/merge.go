@@ -42,7 +42,7 @@ func MergeDocument(id string, current Document, update Update) (Document, bool, 
 		changed = true
 	}
 	for _, in := range update.Stages {
-		if in.ID == "" || in.Name == "" || in.Actor.Key() == "" || in.StartedAt.IsZero() || in.ID == in.ParentID || in.ID == model.RootID(id) {
+		if in.ID == "" || in.Name == "" || in.StartedAt.IsZero() || in.ID == in.ParentID || in.ID == model.RootID(id) {
 			return Document{}, false, model.ErrInvalidStage
 		}
 		accept(in)

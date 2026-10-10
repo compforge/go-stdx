@@ -8,7 +8,7 @@ import (
 )
 
 func Example() {
-	m, err := timeline.NewManager(nil, timeline.Config{Actor: timeline.Actor{Name: "test"}})
+	m, err := timeline.NewManager(nil, timeline.Config{})
 	if err != nil {
 		panic(err)
 	}

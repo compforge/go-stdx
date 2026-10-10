@@ -19,7 +19,7 @@ var ErrBufferFull = errors.New("timeline manager: pending save limit exceeded")
 
 // Config bounds cache capacity and backend calls. Zero fields select defaults.
 type Config struct {
-	Actor               model.Actor   // default recording actor, overridden by stage options
+	Actor               model.Actor   // optional default recording actor, overridden by stage options
 	BatchLimit          int           // default 64 IDs per save batch, MGet or Latest
 	LoadInterval        time.Duration // default 1s between background loads
 	MaxTimelines        int           // default 1024 cached documents

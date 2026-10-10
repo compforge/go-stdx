@@ -1,6 +1,7 @@
 package model
 
-// ActorKey separates ID and name namespaces. Name is descriptive when ID exists.
+// Key separates ID and name namespaces. Name is descriptive when ID exists.
+// The empty key identifies the default executor; it is distinct from named actors.
 func (a Actor) Key() string {
 	if a.ID != "" {
 		return "id:" + a.ID

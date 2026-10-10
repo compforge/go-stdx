@@ -36,7 +36,7 @@ func CloneJSONAttributes(attributes map[string]json.RawMessage) map[string]json.
 	return result
 }
 func ValidateCompleted(id string, stage Stage) error {
-	if stage.Actor.Key() == "" || stage.ID == "" || stage.Name == "" || stage.StartedAt.IsZero() || stage.FinishedAt.IsZero() || stage.FinishedAt.Before(stage.StartedAt) || stage.Elapsed < 0 || stage.ID == stage.ParentID || stage.ID == RootID(id) {
+	if stage.ID == "" || stage.Name == "" || stage.StartedAt.IsZero() || stage.FinishedAt.IsZero() || stage.FinishedAt.Before(stage.StartedAt) || stage.Elapsed < 0 || stage.ID == stage.ParentID || stage.ID == RootID(id) {
 		return ErrInvalidStage
 	}
 	switch stage.Status {
