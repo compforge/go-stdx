@@ -10,23 +10,32 @@ import (
 )
 
 var ErrManagerClosed = errors.New("timeline: manager is shut down")
+var ErrStageNotFound = errors.New("timeline: no active local stage with this name")
+var ErrAmbiguousStage = errors.New("timeline: multiple active local stages have this name")
+var ErrActiveStageLimit = errors.New("timeline: active stage limit exceeded")
+
+var ErrActiveOperationLimit = errors.New("timeline: active operation limit exceeded")
+
 var ErrBufferFull = errors.New("timeline: pending record limit exceeded")
 
 // ManagerConfig controls background persistence. Zero values use the defaults
 // below. Limits count updates/handles, not encoded bytes; attribute sizes remain
 // the caller's responsibility.
 type ManagerConfig struct {
-	FlushInterval     time.Duration // default 1s; also the initial retry delay
-	ExportTimeout     time.Duration // default 5s per handle
-	MaxPendingHandles int           // default 1024
-	MaxPendingUpdates int           // default 1024 per handle, including in-flight updates
+	FlushInterval       time.Duration // default 1s; also the initial retry delay
+	ExportTimeout       time.Duration // default 5s per handle
+	MaxActiveStages     int           // default 4096 across local operations
+	MaxActiveOperations int           // default 1024; local operations with a coordinator or active stages
+	MaxPendingHandles   int           // default 1024
+	MaxPendingUpdates   int           // default 1024 per handle, including in-flight updates
 	// OnError receives background errors once per failure streak per handle.
 	// It runs on the worker, outside locks; it must return promptly and must not
 	// call Shutdown. By default errors are logged with slog, without record data.
 	OnError func(id string, err error)
 }
 
-// Manager owns background persistence for local recording handles. Mutations
+// Manager indexes live local coordinators and stages and owns background
+// persistence for their recording handles. Stage mutations
 // only change memory and signal the worker; callers need not Flush each stage.
 // One worker processes dirty handles, with bounded IO and per-handle backoff.
 // Store connections and durable retention remain owned by the application.
@@ -34,17 +43,21 @@ type ManagerConfig struct {
 // spec: A notification is a hint. Dirty state survives coalesced notifications,
 // failed writes, and callers discarding their handles. Success only acknowledges
 // the captured update batch; concurrent mutations remain pending.
+// spec: The active index owns local coordinator/stage lookup, not durable history.
+// Ending a root must not revoke concurrent stage ownership or pending writes.
 // link: ../docs/timeline.md#manager-与后台提交
 type Manager struct {
-	store   Store
-	config  ManagerConfig
-	mu      sync.Mutex
-	dirty   map[*Recorder]*managedPending
-	closed  bool
-	dropped uint64
-	wake    chan struct{}
-	done    chan struct{}
-	cancel  context.CancelFunc
+	store        Store
+	config       ManagerConfig
+	mu           sync.Mutex
+	dirty        map[*Recorder]*managedPending
+	active       map[string]*managedTimeline
+	activeStages int
+	closed       bool
+	dropped      uint64
+	wake         chan struct{}
+	done         chan struct{}
+	cancel       context.CancelFunc
 }
 
 type managedPending struct {
@@ -65,7 +78,7 @@ func NewManager(store Store, config ManagerConfig) (*Manager, error) {
 	if store == nil {
 		return nil, errors.New("timeline: nil Store")
 	}
-	if config.FlushInterval < 0 || config.ExportTimeout < 0 || config.MaxPendingHandles < 0 || config.MaxPendingUpdates < 0 {
+	if config.FlushInterval < 0 || config.ExportTimeout < 0 || config.MaxPendingHandles < 0 || config.MaxPendingUpdates < 0 || config.MaxActiveOperations < 0 || config.MaxActiveStages < 0 {
 		return nil, errors.New("timeline: negative manager configuration")
 	}
 	if config.FlushInterval == 0 {
@@ -73,6 +86,12 @@ func NewManager(store Store, config ManagerConfig) (*Manager, error) {
 	}
 	if config.ExportTimeout == 0 {
 		config.ExportTimeout = 5 * time.Second
+	}
+	if config.MaxActiveStages == 0 {
+		config.MaxActiveStages = 4096
+	}
+	if config.MaxActiveOperations == 0 {
+		config.MaxActiveOperations = 1024
 	}
 	if config.MaxPendingHandles == 0 {
 		config.MaxPendingHandles = 1024
@@ -87,7 +106,7 @@ func NewManager(store Store, config ManagerConfig) (*Manager, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{
-		store: store, config: config, dirty: make(map[*Recorder]*managedPending),
+		store: store, config: config, dirty: make(map[*Recorder]*managedPending), active: make(map[string]*managedTimeline),
 		wake: make(chan struct{}, 1), done: make(chan struct{}), cancel: cancel,
 	}
 	go m.run(ctx)
@@ -97,7 +116,9 @@ func NewManager(store Store, config ManagerConfig) (*Manager, error) {
 // New returns an independent writer for id. Handles sharing an ID contribute to
 // the same document but retain their own Actor and coordinator authority. Options
 // may set WithActor; WithStore is invalid because the Manager owns the Store.
-// Idle handles are not retained by the Manager and can become dirty again later.
+// Participants are retained while dirty or while their stages are active. Start
+// registers a local coordinator until successful Finish, explicit Release, or
+// successful Shutdown.
 func (m *Manager) New(id string, options ...Option) (*Recorder, error) {
 	if id == "" {
 		return nil, ErrEmptyID
@@ -152,23 +173,25 @@ func (m *Manager) schedule(r *Recorder) error {
 
 // ManagerStats describes this process's buffers, never global completeness.
 type ManagerStats struct {
-	PendingHandles int
-	DroppedUpdates uint64
+	PendingHandles   int
+	ActiveOperations int
+	ActiveStages     int
+	DroppedUpdates   uint64
 }
 
 func (m *Manager) Stats() ManagerStats {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return ManagerStats{PendingHandles: len(m.dirty), DroppedUpdates: m.dropped}
+	return ManagerStats{PendingHandles: len(m.dirty), ActiveOperations: len(m.active), ActiveStages: m.activeStages, DroppedUpdates: m.dropped}
 }
 
-func (m *Manager) work(readyOnly bool) []managedWork {
+func (m *Manager) work(readyOnly bool, id string) []managedWork {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now()
 	work := make([]managedWork, 0, len(m.dirty))
 	for r, p := range m.dirty {
-		if !readyOnly || !now.Before(p.next) {
+		if (id == "" || r.id == id) && (!readyOnly || !now.Before(p.next)) {
 			work = append(work, managedWork{recorder: r, pending: p, generation: p.generation})
 		}
 	}
@@ -186,7 +209,7 @@ func (m *Manager) run(ctx context.Context) {
 		case <-ticker.C:
 		case <-m.wake:
 		}
-		for _, w := range m.work(true) {
+		for _, w := range m.work(true, "") {
 			if ctx.Err() != nil {
 				return
 			}
@@ -237,11 +260,15 @@ func (m *Manager) complete(w managedWork, err error) bool {
 // processes. Errors retain pending data for retry. The caller's context bounds
 // the whole call; each handle also has the configured ExportTimeout.
 func (m *Manager) Flush(ctx context.Context) error {
+	return m.flush(ctx, "")
+}
+
+func (m *Manager) flush(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	var errs []error
-	for _, w := range m.work(false) {
+	for _, w := range m.work(false, id) {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(append(errs, err)...)
 		}
@@ -266,7 +293,14 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Unlock()
 	select {
 	case <-m.done:
-		return m.Flush(ctx)
+		err := m.Flush(ctx)
+		if err == nil {
+			m.mu.Lock()
+			clear(m.active)
+			m.activeStages = 0
+			m.mu.Unlock()
+		}
+		return err
 	case <-ctx.Done():
 		return ctx.Err()
 	}

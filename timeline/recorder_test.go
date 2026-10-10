@@ -31,7 +31,7 @@ func TestSharedHandlesActorHierarchyAndLateStages(t *testing.T) {
 	if err := owner.Start(ctx, "sandbox_start"); err != nil {
 		t.Fatal(err)
 	}
-	parentCtx, parent := timeline.BeginContext(ctx, owner, "start")
+	parentCtx, parent := timeline.BeginWithContext(ctx, owner, "start")
 	ref, ok := timeline.StageFromContext(parentCtx)
 	if !ok {
 		t.Fatal("missing stage reference")
@@ -44,7 +44,7 @@ func TestSharedHandlesActorHierarchyAndLateStages(t *testing.T) {
 	}
 	worker := handle(t, "sandbox", store, "scheduler")
 	remoteCtx := timeline.NewStageContext(ctx, remote)
-	_, stage := timeline.BeginContext(remoteCtx, worker, "acquire_carrier")
+	_, stage := timeline.BeginWithContext(remoteCtx, worker, "acquire_carrier")
 	if err := worker.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestSharedHandlesActorHierarchyAndLateStages(t *testing.T) {
 	if err := worker.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	_, late := timeline.BeginContext(ctx, worker, "late_observation")
+	_, late := timeline.BeginWithContext(ctx, worker, "late_observation")
 	late.End(nil)
 	got, err := worker.Snapshot(ctx)
 	if err != nil || len(got.Stages) != 3 || len(got.RunningStages()) != 0 {
@@ -74,7 +74,7 @@ func TestSharedHandlesActorHierarchyAndLateStages(t *testing.T) {
 	}
 	// A reference belonging to another timeline cannot create a foreign edge.
 	unrelated := handle(t, "other", store, "other")
-	_, s := timeline.BeginContext(remoteCtx, unrelated, "isolated")
+	_, s := timeline.BeginWithContext(remoteCtx, unrelated, "isolated")
 	s.End(nil)
 	isolated, _ := unrelated.Snapshot(ctx)
 	if isolated.Stages[0].ParentID != isolated.RootStageID {
@@ -98,7 +98,7 @@ func TestConcurrentHandlesAndSnapshots(t *testing.T) {
 			defer wg.Done()
 			tl := handle(t, "same", store, fmt.Sprint(i))
 			for j := 0; j < 8; j++ {
-				_, stage := timeline.BeginContext(ctx, tl, "parallel")
+				_, stage := timeline.BeginWithContext(ctx, tl, "parallel")
 				stage.SetAttributes(timeline.Attribute{Key: "index", Value: j})
 				if j%2 == 0 {
 					if _, err := tl.Snapshot(ctx); err != nil {
@@ -155,7 +155,7 @@ func TestFlushRetriesAcceptedRecordsWithoutDuplicating(t *testing.T) {
 	if err := tl.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	_, stage := timeline.BeginContext(ctx, tl, "work")
+	_, stage := timeline.BeginWithContext(ctx, tl, "work")
 	stage.End(nil)
 	snapshot, err := tl.Finish(ctx, nil)
 	if err != nil || len(snapshot.Stages) != 1 {
@@ -198,7 +198,7 @@ func TestSharedSnapshotOwnershipAndEncodingFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	input := map[string]any{"large": uint64(math.MaxUint64), "name": "before"}
-	_, stage := timeline.BeginContext(ctx, tl, "work", timeline.WithAttributes(timeline.Attribute{Key: "input", Value: input}))
+	_, stage := timeline.BeginWithContext(ctx, tl, "work", timeline.WithAttributes(timeline.Attribute{Key: "input", Value: input}))
 	input["name"] = "after"
 	stage.End(nil)
 	snapshot, err := tl.Snapshot(ctx)
@@ -258,7 +258,7 @@ func (s *blockedStore) Merge(ctx context.Context, id string, update timeline.Upd
 func TestFlushDeadlineWhileAnotherFlushIsBlocked(t *testing.T) {
 	store := &blockedStore{Store: timeline.NewMemoryStore(), entered: make(chan struct{}), unblock: make(chan struct{})}
 	tl := handle(t, "blocked", store, "writer")
-	_, stage := timeline.BeginContext(context.Background(), tl, "work")
+	_, stage := timeline.BeginWithContext(context.Background(), tl, "work")
 	stage.End(nil)
 	done := make(chan error, 1)
 	go func() { done <- tl.Flush(context.Background()) }()
@@ -285,7 +285,7 @@ func TestActorIsOptionalAndMayContainOnlyName(t *testing.T) {
 		if err := tl.Start(ctx, "start"); err != nil {
 			t.Fatal(err)
 		}
-		_, stage := timeline.BeginContext(ctx, tl, "work")
+		_, stage := timeline.BeginWithContext(ctx, tl, "work")
 		stage.End(nil)
 		snapshot, err := tl.Finish(ctx, nil)
 		if err != nil {
