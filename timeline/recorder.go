@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/compforge/go-stdx/timeline/internal/cache"
 	"github.com/compforge/go-stdx/timeline/model"
 	"github.com/compforge/go-stdx/timeline/store"
 	"github.com/google/uuid"
@@ -15,34 +16,27 @@ import (
 
 var ErrNotStarted = errors.New("timeline: operation attributes require a locally recorded start")
 
-// Option configures a writer without performing remote IO.
-type Option func(*Recorder)
-
-func WithStore(backend store.Store) Option { return func(t *Recorder) { t.store = backend } }
-func WithActor(actor Actor) Option         { return func(t *Recorder) { t.actor = actor } }
-
-// Writer accepts immutable recording facts and provides a persistence checkpoint.
+// factWriter accepts immutable recording facts and provides a persistence checkpoint.
 // A rejected write must not be retained. Acceptance and retention depend on the
-// implementation: Manager uses a best-effort loading cache; standalone Recorder
+// implementation: Manager uses a best-effort loading cache; standalone recorder
 // buffers until an explicit Flush. Implementations support concurrent callers.
-type Writer interface {
+type factWriter interface {
 	Write(store.Update) error
 	// RecordError retains collection loss independently of pending queue membership.
 	RecordError(error)
 	Flush(context.Context) error
 }
 
-// WithWriter selects the local submission policy. store.Store remains the read backend.
-// The writer must submit to the same store and operation ID as the Recorder.
-func WithWriter(writer Writer) Option { return func(t *Recorder) { t.writer = writer } }
+// withWriter is internal wiring for cache-backed handles and one-fact builders.
+func withWriter(writer factWriter) Option { return func(t *recorder) { t.writer = writer } }
 
-// Recorder owns one writer's revisions, operation facts and stage timing. It has
+// recorder owns one writer's revisions, operation facts and stage timing. It has
 // no process cache, worker or expiry policy. Multiple writers contribute to one ID.
-type Recorder struct {
+type recorder struct {
 	id           string
 	store        store.Store
 	actor        Actor
-	writer       Writer
+	writer       factWriter
 	mu           sync.Mutex
 	operation    store.OperationRecord
 	attributeErr error
@@ -52,11 +46,11 @@ type Recorder struct {
 }
 
 // New binds a writer to an ID without recording a start or querying storage.
-func New(id string, options ...Option) (*Recorder, error) {
+func newRecorder(id string, options ...Option) (*recorder, error) {
 	if id == "" {
 		return nil, ErrEmptyID
 	}
-	t := &Recorder{id: id, store: store.NewMemoryStore()}
+	t := &recorder{id: id, store: store.NewNoopStore()}
 	for _, option := range options {
 		option(t)
 	}
@@ -64,15 +58,19 @@ func New(id string, options ...Option) (*Recorder, error) {
 		return nil, errors.New("timeline: nil Store")
 	}
 	if t.writer == nil {
-		t.writer = &localWriter{id: id, store: t.store, gate: make(chan struct{}, 1)}
+		c, err := cache.NewStandalone(t.store)
+		if err != nil {
+			return nil, err
+		}
+		t.writer = &cachedWriter{id: id, cache: c}
 	}
 	return t, nil
 }
-func (t *Recorder) ID() string { return t.id }
+func (t *recorder) ID() string { return t.id }
 
 // RecordStart accepts an optional beginning without forcing a flush. Repeating the
 // same facts is idempotent and retains the original time. Finish may arrive first.
-func (t *Recorder) RecordStart(operation string, attributes ...Attribute) error {
+func (t *recorder) RecordStart(operation string, attributes ...Attribute) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	values, err := encodeAttributes(attributes)
@@ -102,7 +100,7 @@ func (t *Recorder) RecordStart(operation string, attributes ...Attribute) error 
 
 // Start records the optional beginning and checkpoints this standalone writer.
 // Manager's ID-based Start uses RecordStart and submits in the background.
-func (t *Recorder) Start(ctx context.Context, operation string, attributes ...Attribute) error {
+func (t *recorder) Start(ctx context.Context, operation string, attributes ...Attribute) error {
 	if err := t.RecordStart(operation, attributes...); err != nil {
 		return err
 	}
@@ -130,7 +128,7 @@ func StageFromContext(ctx context.Context) (StageRef, bool) {
 
 // Begin records a running stage. Use Err to inspect admission/encoding errors
 // when a noop handle is returned. Manager.Begin returns the error directly.
-func (t *Recorder) Begin(name string, opts ...StageOption) StageHandle {
+func (t *recorder) Begin(name string, opts ...StageOption) StageHandle {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := time.Now()
@@ -158,13 +156,13 @@ func (t *Recorder) Begin(name string, opts ...StageOption) StageHandle {
 	return s
 }
 
-func (t *Recorder) SetAttributes(attributes ...Attribute) {
+func (t *recorder) SetAttributes(attributes ...Attribute) {
 	_ = t.UpdateAttributes(attributes...)
 }
 
 // UpdateAttributes updates a locally recorded start's attributes, returning
 // admission errors immediately. It does not require an operation to remain open.
-func (t *Recorder) UpdateAttributes(attributes ...Attribute) error {
+func (t *recorder) UpdateAttributes(attributes ...Attribute) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if !t.started {
@@ -186,7 +184,7 @@ func (t *Recorder) UpdateAttributes(attributes ...Attribute) error {
 
 type recordedStage struct {
 	id       StageID // immutable even while record is replaced under the owner lock
-	owner    *Recorder
+	owner    *recorder
 	record   store.StageUpdate
 	started  time.Time
 	ended    bool
@@ -290,18 +288,18 @@ func mergeAttributes(dst, src map[string]json.RawMessage) map[string]json.RawMes
 
 // Flush checkpoints the configured writer. A Manager-backed writer checkpoints
 // its ID; a standalone writer checkpoints only its own buffer.
-func (t *Recorder) Flush(ctx context.Context) error {
+func (t *recorder) Flush(ctx context.Context) error {
 	return errors.Join(t.writer.Flush(ctx), t.Err())
 }
 
 // Err reports recording errors on this handle. Submission failures are returned
 // immediately; accepted-data loss remains visible through the writer's checkpoint.
-func (t *Recorder) Err() error {
+func (t *recorder) Err() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.attributeErr
 }
-func (t *Recorder) recordError(err error) error {
+func (t *recorder) recordError(err error) error {
 	if t.attributeErr == nil {
 		t.attributeErr = err
 	}
@@ -309,20 +307,19 @@ func (t *Recorder) recordError(err error) error {
 	return err
 }
 
-func (t *Recorder) Snapshot(ctx context.Context) (Snapshot, error) {
+func (t *recorder) Snapshot(ctx context.Context) (Snapshot, error) {
 	flushErr := t.Flush(ctx)
-	doc, readErr := t.store.Read(ctx, t.id)
-	if doc.ID == "" {
-		doc.ID, doc.RootStageID = t.id, model.RootID(t.id)
-	}
-	snapshot := doc.Snapshot(time.Now().UTC())
-	snapshot.Collection = Collection{LocalFlushed: flushErr == nil, StoreRead: readErr == nil}
+	reader := t.writer.(interface {
+		ReadSnapshot(context.Context) (Snapshot, error)
+	})
+	snapshot, readErr := reader.ReadSnapshot(ctx)
+	snapshot.Collection.LocalFlushed = flushErr == nil && (snapshot.Collection.LocalFlushed || errors.Is(readErr, store.ErrNotFound))
 	return snapshot, errors.Join(flushErr, readErr)
 }
 
 // RecordFinish accepts an optional result even without RecordStart. It never
 // ends stages or prevents late recording. Repeating the same result is idempotent.
-func (t *Recorder) RecordFinish(operationErr error) error {
+func (t *recorder) RecordFinish(operationErr error) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	status, message := result(operationErr)
@@ -352,14 +349,14 @@ func (t *Recorder) RecordFinish(operationErr error) error {
 }
 
 // Finish records an optional result and reads a snapshot for standalone callers.
-func (t *Recorder) Finish(ctx context.Context, operationErr error) (Snapshot, error) {
+func (t *recorder) Finish(ctx context.Context, operationErr error) (Snapshot, error) {
 	finishErr := t.RecordFinish(operationErr)
 	snapshot, err := t.Snapshot(ctx)
 	return snapshot, errors.Join(finishErr, err)
 }
-func (t *Recorder) enqueueOperation(operation store.OperationRecord) error {
+func (t *recorder) enqueueOperation(operation store.OperationRecord) error {
 	operation.Attributes = model.CloneJSONAttributes(operation.Attributes)
 	return t.writer.Write(store.Update{Operation: &operation})
 }
 
-var _ Timeline = (*Recorder)(nil)
+var _ Timeline = (*recorder)(nil)

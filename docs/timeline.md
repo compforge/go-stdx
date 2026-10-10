@@ -19,8 +19,8 @@ Snapshot 是一次读取的独立视图，Document 是持久化的最新事实�
 
 ## 使用流程
 
-应用启动时创建 `manager.Manager` 并通过 `manager.SetDefault` 安装默认实例。
-业务主路径只有六个接口；需要隔离实例时使用显式 Manager 的同名方法。
+应用启动时创建 `timeline.Manager`（`timeline.NewManager`）并通过 `timeline.SetDefault` 安装默认实例。
+根包业务主路径只有六个接口；需要隔离实例时使用显式 Manager 的同名方法。
 
 | 接口 | 语义 |
 | --- | --- |
@@ -33,8 +33,12 @@ Snapshot 是一次读取的独立视图，Document 是持久化的最新事实�
 
 Manager 同时持有缓存与 Store，六个入口共用一套加载、修改和保存策略。命中缓存时直接
 操作内存文档；miss 时查询 Store，写操作在未找到文档时创建，Read 返回 ErrNotFound。
-查询错误直接返回，不把故障当作不存在。后台 worker 合并并保存事实；Read 返回当前缓存
-视图，需要等待持久化时显式调用 FlushID。业务失败保存在 Stage 或 Snapshot 的结果中。
+查询错误直接返回，不把故障当作不存在。后台 worker 自动合并并保存事实，长期运行的服务
+通常无需主动调用 Flush；退出时用 Shutdown 等待剩余事实保存。Read 返回当前缓存
+视图，需要等待保存结果时显式调用 `Flush(ctx, id, true)`。`Flush(ctx, id, false)` 唤醒
+共享保存 worker 后立即返回，多个触发可以合并，也可能一并保存其它待提交 ID。已接收的
+异步保存使用 Manager 生命周期与 IO 超时，调用方随后取消 context 不会取消保存；
+保存失败通过 OnError 报告。业务失败保存在 Stage 或 Snapshot 的结果中。
 
 Begin 返回的句柄可以忽略，End 按名称查找唯一运行中的阶段。同名阶段可以顺序重复；
 并行同名阶段返回 ErrAmbiguousStage，调用方使用各自的句柄精确结束。StageHandle.End 和
@@ -67,16 +71,21 @@ miss 合并为一次加载，每次存储 IO 有超时，取消一个读取者�
 缓存淘汰不决定业务结果，缺少结束事实的阶段仍保持 running。
 
 后台保存成功后，干净副本可以继续服务读取，直到 LRU 淘汰；需要立即释放时可调用
-Manager.Evict。需要先落盘再移除时，先等待 FlushID 成功。淘汰有待保存事实时会安排最终
+Manager.Evict。需要先保存再移除时，先等待 `Flush(ctx, id, true)` 成功。淘汰有待保存事实时会安排最终
 保存，失败则报告并释放缓冲；此时再次加载只能得到 Store 中已有的事实。
 
 缓存采用尽力而为语义：温热缓存可能落后于其它进程，进程退出或淘汰保存失败可能丢失尚未
 落盘的事实。它适合观测与诊断。要求每次读取最新状态或每次写入持久化的应用应直接使用 Store。
 
+NoopStore 的 Merge 接受并丢弃更新，Read 返回 ErrNotFound。`NewManager(nil, config)`
+和 `timeline.New(id)` 默认使用它；纯内存模式的完整文档只保存在缓存。Flush 成功表示 Store
+已接受提交，不宣称数据已持久化。NoopStore 无法恢复淘汰或退出后的事实，应用需要在数据
+仍在缓存时读取并自行导出。JSONL 等导出格式由消费方持有。
+
 ## 接收与持久化
 
-核心 Recorder 维护单个 writer 的修订号和计时，通过 `timeline.Writer` 提交事实。独立
-Recorder 使用显式 Flush 的本地缓冲；Manager 的六个入口从缓存文档恢复录制状态，并在
+内部录制器维护阶段修订号和计时，并向统一缓存提交事实。Manager 和对象式 Handle
+共用缓存加载、接收、合并与 Store 保存实现；Manager 的六个入口从缓存文档恢复录制状态，并在
 同一条目锁内构造和接收变化，因此拒绝的写入不会推进文档状态或让阶段提前结束。
 
 后台 IO 在条目锁之外执行，记录操作可以继续修改内存。提交时固定批次，不确定的失败
@@ -93,14 +102,15 @@ DroppedUpdates 累计容量拒绝和最终保存丢弃，RejectedUpdates 累计�
 
 Read 返回的 Collection.LocalFlushed 表示当前条目没有待保存事实或已知保存损失；
 Collection.StoreRead 表示本次读取成功加载了 Store。命中缓存时 StoreRead 为 false。
-两者都不宣称分布式数据已经完整。FlushID 是当前实例的持久化检查点；跨进程交接时可在
-发布完成之前等待 FlushID，再让读取者淘汰旧缓存或直接查询 Store。
+两者都不宣称分布式数据已经完整。`Flush(ctx, id, true)` 是当前实例的 Store 提交检查点；
+跨进程交接时可在发布完成之前等待它成功，再让读取者淘汰旧缓存或直接查询 Store。
+数据是否持久化取决于 Store 实现。
 
 ## 存储与合并
 
-`timeline/store` 统一拥有 Store 契约、Update、Document、文档编码/合并/快照投影和 MemoryStore，
+`timeline/store` 统一拥有 Store 契约、Update、Document、文档编码/合并/快照投影和 NoopStore、MemoryStore，
 SQL 实现位于 `timeline/store/sqlstore`。录制与存储共用公开的 `timeline/model` 值模型，业务也可继续使用
-`timeline.Stage`、`timeline.Snapshot`；存储无需依赖 Recorder 或 Manager，避免循环引用。
+`timeline.Stage`、`timeline.Snapshot`；存储无需依赖录制器或 Manager，避免循环引用。
 
 `store.Store.Merge` 将 Update 原子合并进同一 ID 的 Document。Document 保存每个阶段的最新状态，
 不保存事件日志。MemoryStore 使用锁，SQL Store 使用行版本 CAS；公共 MergeDocument
@@ -115,7 +125,7 @@ SQL 实现位于 `timeline/store/sqlstore`。录制与存储共用公开的 `tim
 多个进程提交不相同的同一边界时返回 ErrConflict，SDK 不提供调度、租约或自动接管。
 
 业务重试应使用新的阶段身份；存储重试使用相同身份和内容。显式来源时间原样保留，
-独立 Recorder 的现场阶段保留单调时钟测得的 elapsed_ns。Manager 从文档恢复阶段，
+对象式 Handle 的现场阶段保留单调时钟测得的 elapsed_ns。Manager 从文档恢复阶段，
 耗时通过已记录的起止时间计算；持久化不能恢复单调时钟。跨主机时间只用于展示，不推断精确因果顺序。
 阶段按开始时间和 ID 排列，保留重叠，不能将阶段耗时相加作为操作总耗时。
 
@@ -154,3 +164,9 @@ Shutdown 后仍可通过 Read 直接查询 Store。
 `timeline/gospan` 提供有封存边界的进程内实现，Finish 等待本地阶段结束后关闭 writer，
 之后可以补录完整区间。Registry 仅用于这种显式句柄的本地查找，不参与 Manager 的缓存。
 Snapshot 的 Summary、RunningStages、LatestFailedStage 是纯数据查询，不改变采集状态。
+
+对象式 API 集中在 `handle.go`，`timeline.New(id, ...Option)` 返回 Handle。默认使用
+NoopStore，缓存随 Handle 保留，只有显式 Flush、Snapshot 或 Finish 时才提交 Store；
+没有后台 worker。配置外部 Store 后，Snapshot 会通过同一缓存实现刷新远端事实，并保留
+本地已接受的更新。Manager.NewWriter 返回的 Handle 直接使用该 Manager 的缓存和后台
+保存策略。内部录制器只负责构造事实，不作为独立公开概念。

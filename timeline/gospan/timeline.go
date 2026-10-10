@@ -29,7 +29,7 @@ type recorder struct {
 	sequence     uint64
 	attributeErr error // first encoding error; lost input keeps subsequent snapshots incomplete
 	finished     bool
-	imports      *timeline.Recorder
+	imports      *timeline.Handle
 	stages       map[timeline.StageID]*stage
 }
 

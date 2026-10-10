@@ -47,7 +47,7 @@ func newManager(t *testing.T, store timelinestore.Store, config managed.Config) 
 	return m
 }
 
-func managedHandle(t *testing.T, m *managed.Manager, id, actor string) *timeline.Recorder {
+func managedHandle(t *testing.T, m *managed.Manager, id, actor string) *timeline.Handle {
 	t.Helper()
 	r, err := m.NewWriter(id, timeline.Actor{ID: actor})
 	if err != nil {
@@ -190,7 +190,7 @@ func TestManagerSharedIDKeepsWriterActors(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if err := m.Flush(context.Background()); err != nil {
+	if err := m.Flush(context.Background(), "shared", true); err != nil {
 		t.Fatal(err)
 	}
 	got, err := owner.Finish(context.Background(), nil)
@@ -359,7 +359,7 @@ func TestManagerConcurrentFlushAndHandleReuse(t *testing.T) {
 				case <-stop:
 					return
 				default:
-					if err := m.Flush(context.Background()); err != nil {
+					if err := m.Flush(context.Background(), "reused", true); err != nil {
 						t.Error(err)
 						return
 					}

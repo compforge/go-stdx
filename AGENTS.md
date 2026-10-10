@@ -12,19 +12,23 @@ Go stdlib 扩展库，长期对标 Java 里 Guava 的位置——项目手写 he
 
 ```text
 timeline/
-├── recorder.go、writer.go     # 事实录制、计时与独立写入；不依赖 manager
+├── global.go、manager*.go     # 根包六个 ID 入口与 Manager 编排
+├── handle.go                 # 非主要路径的对象式 API
+├── recorder.go、writer.go     # 内部事实构造与缓存写入
+├── internal/cache/           # 所有原生入口共用的加载、合并与保存实现
 ├── model/                    # 录制与存储共享的值类型、校验及快照编码
-├── manager/                  # 六个 ID 入口，统一缓存加载与 Store 保存策略
-├── store/                    # Store 契约、文档编码/合并/投影与 MemoryStore
+├── manager/                  # 原包路径转发，共用根包默认 Manager
+├── store/                    # Store 契约、文档编码/合并/投影与 NoopStore、MemoryStore
 │   └── sqlstore/             # 复用应用 SQL 连接池的持久化实现
 └── gospan/                   # 有封存边界的进程内实现
 ```
 
-依赖方向为 `manager → timeline → store → model`，`sqlstore → store`。
-核心 Recorder 通过 Writer 契约提交事实；共享值类型通过 `timeline.Stage`、`timeline.Snapshot`
+依赖方向为 `manager → timeline → internal/cache → store → model`，`sqlstore → store`。
+录制器是内部事实构造实现，对象式 API 集中在 Handle；共享值类型通过 `timeline.Stage`、`timeline.Snapshot`
 等别名对外提供，存储包不依赖录制或管理生命周期。
-Manager 直接持有 `jellydator/ttlcache/v3` 和 Store；最大数量与 LRU 控制缓存驻留，保存周期独立配置。
-miss 从 Store 恢复，写入缺失 ID 才创建；Read 不强制落盘，Flush 是显式检查点。
+统一缓存实现持有 `jellydator/ttlcache/v3` 和 Store；最大数量与 LRU 控制缓存驻留，保存周期独立配置。
+miss 从 Store 恢复，写入缺失 ID 才创建；Read 不强制提交 Store，阻塞 Flush 是显式检查点。
+默认 NoopStore 不保存文档，纯内存模式只在缓存中保留完整事实；导出格式和时机归消费方。
 保存采用尽力而为策略：淘汰时尝试最终保存，失败报告后释放缓冲；Finish 只记录业务结果。
 ID 的业务含义、执行调度与数据库保留期归应用。详细契约见 `docs/timeline.md`。
 

@@ -1,11 +1,9 @@
-package manager
+package timeline
 
 import (
 	"context"
 	"errors"
 	"sync/atomic"
-
-	"github.com/compforge/go-stdx/timeline"
 )
 
 var ErrNoDefault = errors.New("timeline manager: no default installed")
@@ -23,35 +21,35 @@ func current() (*Manager, error) {
 	return m, nil
 }
 
-func Begin(id, name string, options ...timeline.StageOption) (timeline.StageHandle, error) {
+func Begin(id, name string, options ...StageOption) (StageHandle, error) {
 	m, err := current()
 	if err != nil {
 		return nil, err
 	}
 	return m.Begin(id, name, options...)
 }
-func End(id, name string, stageErr error, options ...timeline.EndOption) error {
+func End(id, name string, stageErr error, options ...EndOption) error {
 	m, err := current()
 	if err != nil {
 		return err
 	}
 	return m.End(id, name, stageErr, options...)
 }
-func Record(id string, stage timeline.Stage) error {
+func Record(id string, stage Stage) error {
 	m, err := current()
 	if err != nil {
 		return err
 	}
 	return m.Record(id, stage)
 }
-func Read(ctx context.Context, id string) (timeline.Snapshot, error) {
+func Read(ctx context.Context, id string) (Snapshot, error) {
 	m, err := current()
 	if err != nil {
-		return timeline.Snapshot{}, err
+		return Snapshot{}, err
 	}
 	return m.Read(ctx, id)
 }
-func Start(id, operation string, attributes ...timeline.Attribute) error {
+func Start(id, operation string, attributes ...Attribute) error {
 	m, err := current()
 	if err != nil {
 		return err

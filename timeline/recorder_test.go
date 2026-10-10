@@ -16,7 +16,7 @@ import (
 	timelinestore "github.com/compforge/go-stdx/timeline/store"
 )
 
-func handle(t *testing.T, id string, store timelinestore.Store, actor string) *timeline.Recorder {
+func handle(t *testing.T, id string, store timelinestore.Store, actor string) *timeline.Handle {
 	t.Helper()
 	tl, err := timeline.New(id, timeline.WithStore(store), timeline.WithActor(timeline.Actor{ID: actor, Name: "pod-" + actor}))
 	if err != nil {

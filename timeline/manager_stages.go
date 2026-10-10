@@ -1,7 +1,6 @@
-package manager
+package timeline
 
 import (
-	"github.com/compforge/go-stdx/timeline"
 	"github.com/compforge/go-stdx/timeline/store"
 )
 
@@ -10,16 +9,16 @@ import (
 type stageHandle struct {
 	manager    *Manager
 	timelineID string
-	id         timeline.StageID
+	id         StageID
 }
 
-func (s *stageHandle) ID() timeline.StageID { return s.id }
+func (s *stageHandle) ID() StageID { return s.id }
 
 // Begin records a running stage. Same-name parallel stages are allowed; retain
 // their handles to disambiguate completion.
-func (m *Manager) Begin(id, name string, options ...timeline.StageOption) (timeline.StageHandle, error) {
-	var stageID timeline.StageID
-	err := m.apply(id, func(r *timeline.Recorder, _ store.Document) error {
+func (m *Manager) Begin(id, name string, options ...StageOption) (StageHandle, error) {
+	var stageID StageID
+	err := m.apply(id, func(r *recorder, _ store.Document) error {
 		stageID = r.Begin(name, options...).ID()
 		return r.Err()
 	})
@@ -31,8 +30,8 @@ func (m *Manager) Begin(id, name string, options ...timeline.StageOption) (timel
 
 // End completes the uniquely named running stage, restoring it on a cache miss.
 // A rejected admission leaves it running and available for retry.
-func (m *Manager) End(id, name string, stageErr error, options ...timeline.EndOption) error {
-	return m.apply(id, func(r *timeline.Recorder, doc store.Document) error {
+func (m *Manager) End(id, name string, stageErr error, options ...EndOption) error {
+	return m.apply(id, func(r *recorder, doc store.Document) error {
 		var selected *store.StageUpdate
 		for i := range doc.Stages {
 			stage := &doc.Stages[i]
@@ -50,8 +49,8 @@ func (m *Manager) End(id, name string, stageErr error, options ...timeline.EndOp
 		return r.RestoreStage(*selected).End(stageErr, options...)
 	})
 }
-func (s *stageHandle) apply(fn func(timeline.StageHandle) error) error {
-	return s.manager.apply(s.timelineID, func(r *timeline.Recorder, doc store.Document) error {
+func (s *stageHandle) apply(fn func(StageHandle) error) error {
+	return s.manager.apply(s.timelineID, func(r *recorder, doc store.Document) error {
 		for _, record := range doc.Stages {
 			if record.ID == s.id {
 				return fn(r.RestoreStage(record))
@@ -60,9 +59,9 @@ func (s *stageHandle) apply(fn func(timeline.StageHandle) error) error {
 		return ErrStageNotFound
 	})
 }
-func (s *stageHandle) End(err error, options ...timeline.EndOption) error {
-	return s.apply(func(stage timeline.StageHandle) error { return stage.End(err, options...) })
+func (s *stageHandle) End(err error, options ...EndOption) error {
+	return s.apply(func(stage StageHandle) error { return stage.End(err, options...) })
 }
-func (s *stageHandle) SetAttributes(attributes ...timeline.Attribute) error {
-	return s.apply(func(stage timeline.StageHandle) error { return stage.SetAttributes(attributes...) })
+func (s *stageHandle) SetAttributes(attributes ...Attribute) error {
+	return s.apply(func(stage StageHandle) error { return stage.SetAttributes(attributes...) })
 }

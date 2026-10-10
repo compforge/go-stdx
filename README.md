@@ -54,30 +54,29 @@ You can record stages without declaring an operation beginning or result.
 ```go
 import (
     "github.com/compforge/go-stdx/timeline"
-    "github.com/compforge/go-stdx/timeline/manager"
     "github.com/compforge/go-stdx/timeline/store/sqlstore"
 )
 
 // Configure once per process using the application's existing *sql.DB.
-m, err := manager.New(sqlstore.New(db), manager.Config{
+m, err := timeline.NewManager(sqlstore.New(db), timeline.Config{
     MaxTimelines: 1024,
 })
 if err != nil {
     return err
 }
-manager.SetDefault(m)
+timeline.SetDefault(m)
 
 // Neither Start nor Finish is required.
-if _, err := manager.Begin(operationID, "acquire_carrier",
+if _, err := timeline.Begin(operationID, "acquire_carrier",
     timeline.WithStageActor(timeline.Actor{Name: podName}),
 ); err != nil {
     return err
 }
 workErr := acquireCarrier(ctx)
-if err := manager.End(operationID, "acquire_carrier", workErr); err != nil {
+if err := timeline.End(operationID, "acquire_carrier", workErr); err != nil {
     return err
 }
-snapshot, recordingErr := manager.Read(ctx, operationID)
+snapshot, recordingErr := timeline.Read(ctx, operationID)
 // json.Marshal(snapshot) serializes the detached view.
 ```
 
@@ -87,22 +86,28 @@ snapshot, recordingErr := manager.Read(ctx, operationID)
 outcomes remain `unknown`; Finish accepts late stages. For parallel stages sharing
 a name, retain their returned handles to end them precisely.
 
+For cache-only recording, pass nil or `store.NewNoopStore()` to `NewManager`.
+NoopStore retains no documents; facts are lost when their cached copy is evicted.
+Applications own exporting snapshots to files or other formats.
+
 Manager serves reads and writes from memory, loading Store on a cache miss and
-creating missing timelines for writes. It saves changes in the background.
+creating missing timelines for writes. It saves changes in the background, so
+long-running applications normally do not need to call `Flush`.
 At capacity, LRU eviction releases cached copies; persisted stages can be restored and
 continued through their existing handles. Eviction does not finish a timeline.
 
 This is a best-effort cache: warm reads may lag other processes, and unsaved facts
 can be lost if final saving fails. `Read` returns the current view without waiting
-for persistence. Use `m.FlushID(ctx, id)` for an explicit persistence checkpoint;
+for persistence. Use `m.Flush(ctx, id, true)` for an explicit persistence checkpoint,
+or `m.Flush(ctx, id, false)` to wake the background save worker and return immediately;
 use Store directly when each operation must observe or update durable state.
 Snapshot methods include `Summary()`, `RunningStages()` and `LatestFailedStage()`.
 
 At shutdown, stop producers, call `m.Shutdown` with an independent bounded context, then
 close the database. Use an explicit Manager's methods for isolation. `timeline.New`
-provides a standalone writer with explicit checkpoints; `timeline/gospan` provides a
+provides the optional object-style API with explicit checkpoints using the same cache/Store protocol; `timeline/gospan` provides a
 sealed process-local backend. See [the design](docs/timeline.md) and the
-[executable example](timeline/manager/global_example_test.go).
+[executable example](timeline/global_example_test.go).
 
 ## License
 

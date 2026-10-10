@@ -14,11 +14,12 @@ import (
 // may contribute through a shared store.Store. Methods and returned handles are safe
 // for concurrent use. Business code owns completion and stage attribution.
 type Timeline interface {
-	// Record copies and buffers a completed stage. It performs no IO; Flush
-	// confirms persistence. ID, name, actual start/end times and a terminal status
+	// Record copies and accepts a completed stage into the cache. Recording may
+	// load Store on a miss; Flush confirms submission to the configured backend. ID, name, actual start/end times and a terminal status
 	// must be supplied. An omitted ParentID defaults to the root; a supplied parent
 	// need not exist and is preserved for later association. Actor is preserved.
-	// Repeated identical IDs are idempotent; conflicting persisted facts fail Flush.
+	// Repeated identical IDs are idempotent. Known conflicts fail immediately;
+	// conflicts with unseen remote facts fail Flush.
 	Record(Stage) error
 	// Flush confirms this handle's preceding records reached its backend.
 	// It does not wait for records buffered by other handles.
