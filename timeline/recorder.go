@@ -20,8 +20,9 @@ func WithActor(actor Actor) Option { return func(t *Recorder) { t.actor = actor 
 // Recorder is a local handle bound to an operation ID. Independent handles use
 // the same ID and Store to contribute to one timeline; no Registry is needed.
 // Recording methods encode and buffer facts. Flush, Snapshot and Finish perform
-// bounded IO using their supplied context. Flush at business handoff boundaries
-// and before discarding a handle; unflushed records are lost on process exit.
+// bounded IO using their supplied context. Manager handles also persist in the
+// background; standalone handles require an explicit Flush before discarding.
+// Records not yet submitted to the Store are lost on process exit.
 type Recorder struct {
 	id           string
 	store        Store
@@ -29,6 +30,8 @@ type Recorder struct {
 	mu           sync.Mutex
 	flushGate    chan struct{}
 	pending      []Update
+	flushing     int // immutable prefix, retained verbatim after ambiguous IO
+	manager      *Manager
 	operation    OperationRecord
 	attributeErr error
 	started      bool
@@ -112,7 +115,9 @@ func (t *Recorder) Begin(name string, opts ...StageOption) StageHandle {
 	if !data.StartedAt.Equal(now) {
 		s.started = time.Time{}
 	}
-	s.enqueue()
+	if err := s.enqueue(); err != nil {
+		return noopStage{}
+	}
 	return s
 }
 
@@ -140,11 +145,11 @@ type recordedStage struct {
 
 func (s *recordedStage) ID() StageID { return s.record.ID }
 
-func (s *recordedStage) enqueue() {
+func (s *recordedStage) enqueue() error {
 	s.record.Revision++
 	record := s.record
 	record.Attributes = cloneJSONAttributes(record.Attributes)
-	s.owner.pending = append(s.owner.pending, Update{Stages: []StageUpdate{record}})
+	return s.owner.enqueue(Update{Stages: []StageUpdate{record}})
 }
 
 func (s *recordedStage) SetAttributes(attributes ...Attribute) {
@@ -154,7 +159,7 @@ func (s *recordedStage) SetAttributes(attributes ...Attribute) {
 		return
 	}
 	s.record.Attributes = mergeAttributes(s.record.Attributes, s.owner.encode(attributes))
-	s.enqueue()
+	_ = s.enqueue()
 }
 
 func (s *recordedStage) End(err error, opts ...EndOption) {
@@ -179,7 +184,7 @@ func (s *recordedStage) End(err error, opts ...EndOption) {
 		s.record.Elapsed = now.Sub(s.started)
 	}
 	s.record.Status, s.record.Error = result(err)
-	s.enqueue()
+	_ = s.enqueue()
 }
 
 func result(err error) (Status, string) {
@@ -237,12 +242,33 @@ func (t *Recorder) Flush(ctx context.Context) error {
 		return err
 	}
 	t.mu.Lock()
-	updates := append([]Update(nil), t.pending...)
+	remaining := len(t.pending)
 	attributeErr := t.attributeErr
 	t.mu.Unlock()
-	if len(updates) == 0 {
-		return attributeErr
+	for remaining > 0 {
+		t.mu.Lock()
+		if t.flushing == 0 {
+			t.flushing = remaining
+		}
+		updates := append([]Update(nil), t.pending[:t.flushing]...)
+		t.mu.Unlock()
+		update, err := coalesceUpdates(updates)
+		if err != nil {
+			return errors.Join(err, attributeErr)
+		}
+		if err := t.store.Merge(ctx, t.id, update); err != nil {
+			return errors.Join(err, attributeErr)
+		}
+		t.mu.Lock()
+		t.pending = append([]Update(nil), t.pending[len(updates):]...)
+		t.flushing = 0
+		t.mu.Unlock()
+		remaining -= len(updates)
 	}
+	return attributeErr
+}
+
+func coalesceUpdates(updates []Update) (Update, error) {
 	// Coalesce intermediate states before IO; only latest revisions are durable.
 	update := Update{}
 	stages := make(map[StageID]StageUpdate)
@@ -253,7 +279,7 @@ func (t *Recorder) Flush(ctx context.Context) error {
 		}
 		for _, stage := range pending.Stages {
 			if old, ok := stages[stage.ID]; ok && old.Revision == stage.Revision && !sameJSON(old, stage) {
-				return errors.Join(ErrConflict, attributeErr)
+				return Update{}, ErrConflict
 			}
 			stages[stage.ID] = stage
 		}
@@ -261,13 +287,8 @@ func (t *Recorder) Flush(ctx context.Context) error {
 	for _, stage := range stages {
 		update.Stages = append(update.Stages, stage)
 	}
-	if err := t.store.Merge(ctx, t.id, update); err != nil {
-		return errors.Join(err, attributeErr)
-	}
-	t.mu.Lock()
-	t.pending = append([]Update(nil), t.pending[len(updates):]...)
-	t.mu.Unlock()
-	return attributeErr
+	sortStageUpdates(update.Stages)
+	return update, nil
 }
 
 func (t *Recorder) Snapshot(ctx context.Context) (Snapshot, error) {
@@ -305,7 +326,61 @@ func (t *Recorder) Finish(ctx context.Context, operationErr error) (Snapshot, er
 func (t *Recorder) enqueueOperation() {
 	operation := t.operation
 	operation.Attributes = cloneJSONAttributes(operation.Attributes)
-	t.pending = append(t.pending, Update{Operation: &operation})
+	_ = t.enqueue(Update{Operation: &operation})
+}
+
+// enqueue is called under mu. Only unsent full-state updates may be replaced:
+// a timed-out Merge might already have committed its immutable prefix.
+func (t *Recorder) enqueue(update Update) error {
+	if t.manager == nil {
+		t.pending = append(t.pending, update)
+		return nil
+	}
+	index := -1
+	for i := t.flushing; i < len(t.pending); i++ {
+		old := t.pending[i]
+		switch {
+		case update.Operation != nil && old.Operation != nil:
+			index = i
+		case len(update.Stages) == 1 && len(old.Stages) == 1 && update.Stages[0].ID == old.Stages[0].ID:
+			previous, incoming := old.Stages[0], update.Stages[0]
+			if previous.Name != incoming.Name || previous.ParentID != incoming.ParentID || previous.Actor != incoming.Actor || !previous.StartedAt.Equal(incoming.StartedAt) ||
+				(incoming.Revision <= previous.Revision && !sameJSON(update, old)) {
+				return t.recordError(ErrConflict)
+			}
+			index = i
+		case len(update.Completed) == 1 && len(old.Completed) == 1 && update.Completed[0].ID == old.Completed[0].ID:
+			if !sameJSON(update, old) {
+				return t.recordError(ErrConflict)
+			}
+			index = i
+		}
+		if index >= 0 {
+			break
+		}
+	}
+	if index < 0 && len(t.pending) >= t.manager.config.MaxPendingUpdates {
+		t.manager.mu.Lock()
+		t.manager.dropped++
+		t.manager.mu.Unlock()
+		return t.recordError(ErrBufferFull)
+	}
+	if err := t.manager.schedule(t); err != nil {
+		return t.recordError(err)
+	}
+	if index >= 0 {
+		t.pending[index] = update
+	} else {
+		t.pending = append(t.pending, update)
+	}
+	return nil
+}
+
+func (t *Recorder) recordError(err error) error {
+	if t.attributeErr == nil {
+		t.attributeErr = err
+	}
+	return err
 }
 
 var _ Timeline = (*Recorder)(nil)

@@ -63,9 +63,9 @@ Record 要求非空 ID、名称、起止时间，以及 succeeded、failed 或 c
 返回前复制，随后修改 caller 的 map 或 JSON 字节不会改变缓存。格式错误由 Record
 立即返回，持久化和与已存数据的冲突由 Flush 返回。
 
-Flush(ctx) 确认本句柄此前的记录写入 Store，失败保留原始内容供重试。句柄不创建
-后台 goroutine；caller 在业务交接点或丢弃句柄前 Flush。长阶段如需展示运行态，应在
-Begin 后 Flush，不能只在 End 后上报。
+Manager 创建的句柄自动提交 Begin、属性变更、End 和 Record，业务组件只需记录事实。
+Flush(ctx) 是可选的本地持久化屏障，确认本句柄此前的记录写入 Store。独立 New 创建的
+句柄由 caller 显式 Flush；它自身不创建后台 goroutine。
 
 协调方在业务结束时调用 Finish，它记录终态并读取当前快照。业务结束不会封锁后续
 阶段记录，延迟上报可以继续汇入 Snapshot。根状态由调用 Start 的句柄写入，使用递增修订号；开始边界和已接受的终态不能
@@ -74,6 +74,42 @@ Begin 后 Flush，不能只在 End 后上报。
 
 请求超时不等于业务结束。调用方可以 Snapshot 查看进度，后台实际完成方仍负责
 Finish。记录错误由 Flush、Snapshot、Finish 返回，业务错误保存在阶段或操作结果中。
+
+## Manager 与后台提交
+
+Manager 的生命周期对应进程内的一套 Store 配置，Timeline / Stage 是业务使用的操作句柄。
+Manager 管理待提交数据，Store 执行持久化与读取。不同句柄即使绑定同一 ID，也保留各自
+的 Actor 和根操作权限；获取句柄不代表接管另一个协调方的 Start / Finish。
+
+记录方法在锁内更新内存并标记待提交，用合并信号唤醒一个共享 worker。worker 在锁外
+执行 IO，定时器负责重试及漏掉唤醒后的处理。信号不携带唯一一份数据，因此信号合并
+不丢记录。普通更新可以按 Stage 合并为最新状态，运行中的 Stage 也会提交。
+
+提交时固定本轮更新批次，写入结果不确定时重试相同内容与版本。写库期间产生的新变化
+留在后续批次；成功只移除已确认批次，不能清空整个缓冲区。单个句柄的失败按指数退避
+重试，间隔上限为 30 秒，每次 IO 有独立超时。信号不能绕过失败退避。
+
+Manager 只强引用待提交句柄，提交完毕后释放引用。业务仍持有的句柄随时可以再次产生
+变更；业务丢弃句柄也不会丢失已接收的待提交记录。Manager 不依据业务根的 Finish
+回收其他执行方，也不代替 Store 的持久化数据保留策略。
+
+使用约束：
+
+- 服务启动时 NewManager，业务通过 Manager.New 按 ID 创建独立句柄。WithActor 可用；
+  Store 由 Manager 统一提供。Start、Snapshot、Finish 保留显式提交及采集的语义。
+- Manager.Flush 提交调用时已待提交的本地句柄，单个 Recorder.Flush 只提交本句柄。
+  两者都不能排空远端进程，也不等待无限产生的新记录。
+- 服务退出时先停止生产，再用独立、有限时的 context 调用 Shutdown。它拒绝新记录、
+  取消后台 IO，再尝试排空已接收数据；失败后可以重试 Shutdown。Store 连接仍由应用关闭。
+- 缓冲限制按待提交句柄数及每句柄更新数计数，包含正在提交的批次。超限拒绝新更新，
+  不阻塞业务等待数据库；DroppedUpdates 计数增长，句柄保留 ErrBufferFull，后续 Flush /
+  Snapshot 可查询记录损失，Record 直接返回该错误。属性大小由调用方约束。
+- 后台错误默认通过 slog 报告，每个句柄的连续失败只报一次；OnError 可接入应用的错误
+  处理器，回调必须快速返回，不能调用 Shutdown。无待提交数据的句柄不保留在 Manager，
+  Manager.Flush 不追溯已回收句柄的历史采集错误；使用 Stats 监控溢出计数。
+
+默认提供最终可见性：业务完成后记录仍可能稍晚到达 Store。需要跨进程严格交接时，执行方
+仍须确认 Flush 成功后发布业务完成。内存缓冲不提供进程崩溃后的恢复保证。
 
 ## 采集范围
 

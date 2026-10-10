@@ -19,8 +19,7 @@ func (t *Recorder) Record(stage Stage) error {
 	defer t.mu.Unlock()
 	// A completed import has one immutable state, independent of process-local
 	// observation order. Source resource versions never become stage revisions.
-	t.pending = append(t.pending, Update{Completed: []Stage{stage}})
-	return nil
+	return t.enqueue(Update{Completed: []Stage{stage}})
 }
 
 func validateCompleted(id string, stage Stage) error {

@@ -47,16 +47,28 @@ Used by [case-code-review](https://github.com/qiankunli/case-code-review), [host
 ## Operation timelines
 
 Record one operation across concurrent components and processes using its business ID.
-Each process constructs its own handle against the same Store. Stages retain their
+Each process configures a Manager against the same Store and obtains local handles. Stages retain their
 own intervals, parent IDs, results, and optional executor identity; parallel work
 stays parallel in the snapshot.
 
 ```go
 // Configure once per process with the application's existing *sql.DB.
 store := sqlstore.New(db)
+manager, err := timeline.NewManager(store, timeline.ManagerConfig{})
+if err != nil {
+    return err
+}
+// At service shutdown, after producers stop:
+defer func() {
+    cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+    if err := manager.Shutdown(cleanupCtx); err != nil {
+        log.Printf("timeline shutdown: %v", err)
+    }
+}()
 
 // Coordinator: New binds the ID; Start records the business start boundary.
-tl, err := timeline.New(sandboxID, timeline.WithStore(store))
+tl, err := manager.New(sandboxID)
 if err != nil {
     return err
 }
@@ -64,9 +76,8 @@ if err := tl.Start(ctx, "sandbox_start"); err != nil {
     return err // recording error; the application chooses its policy
 }
 
-// Another process can construct the same handle without a remote Open call.
-worker, err := timeline.New(sandboxID,
-    timeline.WithStore(store),
+// Another component uses its local Manager, without a remote Open call.
+worker, err := manager.New(sandboxID,
     timeline.WithActor(timeline.Actor{Name: podName}), // optional
 )
 if err != nil {
@@ -75,9 +86,7 @@ if err != nil {
 stage := worker.Begin("acquire_carrier")
 operationErr := acquireCarrier(ctx)
 stage.End(operationErr)
-if err := worker.Flush(ctx); err != nil {
-    return err // retry Flush before publishing completion if completeness matters
-}
+// Begin, attribute updates and End are persisted automatically in the background.
 
 // Or report an interval whose actual boundaries are already known.
 if err := worker.Record(timeline.Stage{
@@ -86,14 +95,17 @@ if err := worker.Record(timeline.Stage{
 }); err != nil {
     return err
 }
-if err := worker.Flush(ctx); err != nil {
-    return err
-}
 
 // Coordinator records the business outcome; late stages can still be collected.
 snapshot, captureErr := tl.Finish(ctx, operationErr)
 // json.Marshal(snapshot) persists data directly; no separate application DTO.
 ```
+
+Background persistence is eventually visible. For a strict cross-process handoff,
+the producer can explicitly `Flush(ctx)` before publishing completion. Manager
+retains pending records even after business code discards a handle; it bounds
+buffers, retries failed writes, and drains on shutdown. Monitor `Manager.Stats()`
+for dropped updates and configure `OnError` for background failures.
 
 Import `github.com/compforge/go-stdx/timeline` and
 `github.com/compforge/go-stdx/timeline/sqlstore`. Create the SQL schema through the
