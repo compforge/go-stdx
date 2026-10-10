@@ -87,6 +87,8 @@ func (t *Recorder) RecordStart(operation string, attributes ...Attribute) error 
 	}
 	next := t.operation
 	next.Revision++
+	// spec: Start and Finish retain their independently observed times. A late
+	// Start may follow FinishedAt; preserve that order even if Duration is negative.
 	next.Operation, next.StartedAt, next.Attributes = operation, time.Now().UTC(), values
 	if !t.finished {
 		next.Status = Unknown

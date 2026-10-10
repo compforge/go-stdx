@@ -93,6 +93,10 @@ type Collection struct {
 	StoreRead bool `json:"store_read"`
 }
 
+// Duration returns the signed difference between the recorded boundaries, or
+// between StartedAt and CapturedAt while unfinished. A Start observed after
+// Finish intentionally produces a negative duration; timestamps are not clamped
+// or reordered to infer an execution interval. An absent Start returns zero.
 func (s Snapshot) Duration() time.Duration {
 	return interval(s.StartedAt, s.FinishedAt, s.CapturedAt)
 }

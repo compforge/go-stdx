@@ -52,6 +52,10 @@ Start 的相同调用保留文档中已经接受的时间，包括缓存 miss �
 属性不同则冲突。Finish 第一次被接受后固定结果，后续相同结果幂等，结果变更返回 ErrConflict。Finish 之后仍可
 记录阶段，也可补入尚缺失的 Start。操作边界不是本地对象的开关。
 
+Start 与 Finish 分别保留各次调用时记录的时间。先 Finish 后 Start 可以产生倒置的操作
+边界及负的 Snapshot.Duration；这是允许的观测结果。SDK 原样保留时间与差值，不交换
+边界或将负值截为零，也不据此推算真实业务执行区间。
+
 ## 加载缓存与容量
 
 缓存用于降低存储访问频率。Manager 直接复用 `jellydator/ttlcache/v3` 的条目管理、LRU
