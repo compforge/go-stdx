@@ -6,7 +6,7 @@ Go stdlib 扩展库，长期对标 Java 里 Guava 的位置——项目手写 he
 
 ## 代码地图
 
-子包镜像 stdlib 命名（`slicesx` / `stringsx` / `osx` / `ptrx` / `filepathx` / `tarx` / `shellx` / `randx` / `uuid`），调用点读起来像它扩展的那个标准库。一包一职责，包内保持小。
+子包镜像 stdlib 命名（`iterx` / `slicesx` / `stringsx` / `osx` / `ptrx` / `filepathx` / `tarx` / `shellx` / `randx` / `uuid`），调用点读起来像它扩展的那个标准库。一包一职责，包内保持小。
 
 `timeline` 按 ID 聚合阶段事实，操作级 Start / Finish 可独立省略。
 
@@ -21,6 +21,11 @@ ID、业务结果与快照导出归调用方，缓存采用尽力而为语义；
 2. 语义约定：Uniq 系保留**首次出现**且保序；所有函数 nil-in-nil-out。
 3. 消费方（ccr / hostel / …）内部不许再就地手写本库已有的操作——消费仓的 AGENTS.md 应有对应约定。
 4. 根目录 `VERSION` 维护版本号（`vX.Y.Z`）。提交改动时同步按语义化版本 bump `VERSION`；发布的 release tag 必须与文件中的版本一致。
+
+## 验证
+
+`make fix` 格式化，`make lint` 只读检查格式并执行 go vet，`make test` 运行全仓测试。
+定向验证使用 `make test TEST_PACKAGES=./iterx`，保持 Go 的包级编译语义。
 
 ## References
 
