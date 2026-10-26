@@ -25,7 +25,7 @@ ID、业务结果与快照导出归调用方，缓存采用尽力而为语义；
 ## 验证
 
 `make fix` 格式化，`make lint` 只读检查格式并执行 go vet，`make test` 运行全仓测试。
-定向验证使用 `make test TEST_PACKAGES=./iterx`，保持 Go 的包级编译语义。
+定向验证支持 `LINT_FILES`（fix/lint）和 `TEST_FILES`（test），检查保持 Go 的包级编译语义；参数与回退规则见 README 的 Development。
 
 ## References
 

@@ -159,8 +159,21 @@ sealed process-local backend. See [the design](docs/timeline.md) and the
 make fix                 # Format Go packages.
 make lint                # Check formatting and run go vet without changing source.
 make test                # Run all tests, including executable examples.
+make fix LINT_FILES="iterx/loading.go iterx/loading_test.go"
+make lint LINT_FILES="iterx/loading.go iterx/loading_test.go"
+make test TEST_FILES="iterx/loading_test.go"
 make test TEST_PACKAGES=./iterx
 ```
+
+File selections use space-separated paths relative to the module:
+
+- `LINT_FILES` limits formatting to the selected existing Go files; `lint` runs
+  `go vet` on their complete packages.
+- `TEST_FILES` runs tests for the complete containing packages and takes precedence
+  over `TEST_PACKAGES`.
+- Unset or empty file selections keep the defaults above. Non-Go or missing files
+  cause `vet` and tests to fall back to all packages; `fix` still only formats
+  selected existing Go files.
 
 `LINT_WORKERS` and `TEST_WORKERS` default to 4 concurrent packages;
 `GO_TEST_PARALLEL` defaults to 1 parallel test per package. Override them when
