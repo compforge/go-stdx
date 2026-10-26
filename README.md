@@ -10,6 +10,7 @@ Subpackages mirror stdlib naming so call sites read like the standard library th
 
 | package | what | why not stdlib / a lib |
 |---|---|---|
+| `iterx` | `NewLoadingIterator` — lazy, batched loading through standard `iter.Seq2` | stdlib defines the iteration protocol; it does not load pages |
 | `slicesx` | `Uniq`, `UniqBy` — first-occurrence, order-preserving dedup | the "seen map" loop everyone re-writes; stdlib's `slices` has no transform family |
 | `stringsx` | `Truncate` / `TruncateEllipsis` — byte-budget cuts; `FirstNonBlank`; `SplitAndTrim` | the log-truncation and human-written-list helpers every service re-writes (`cmp.Or` covers non-empty, not non-blank) |
 | `osx` | `EnvStr` / `EnvBool` / `EnvInt` / `EnvInt64` / `EnvDuration` — typed env lookups with defaults; `WriteFileAtomic` — temp+rename write | config-from-env boilerplate in every service; `os.WriteFile` can leave readers a torn file |
@@ -43,6 +44,42 @@ ids := slicesx.Uniq(rawIDs)
 ```
 
 Used by [case-code-review](https://github.com/qiankunli/case-code-review), [hostel](https://github.com/qiankunli/hostel), and other Go projects under this account.
+
+## Lazy loading iterators
+
+Supply a page loader and consume its results one item at a time:
+
+```go
+items := iterx.NewLoadingIterator(ctx, loadNextPage)
+for item, err := range items {
+    if err != nil {
+        return err
+    }
+    process(item)
+}
+```
+
+Import `github.com/compforge/go-stdx/iterx`. The loader has signature
+`func(context.Context) ([]T, bool, error)`; the boolean says whether another page
+may exist. It owns filters, page size and cursor state. Give each iterator its own
+loader state and close query resources before returning a page.
+
+Construction performs no I/O. Iteration loads synchronously, holds one batch at a
+time and loads the next only after the current batch is consumed. The final
+batch is yielded even when the boolean is false. Empty pages with more results
+are allowed if the loader advances its cursor. Errors discard the failed page,
+yield `(zero T, err)` once and stop; context cancellation stops loading and item
+delivery. There is no prefetch, background worker or automatic retry.
+
+`LoadingIterator[T]` aliases `iter.Seq2[T, error]`. Each constructed iterator is
+single-use and must not be traversed concurrently. An early `break` ends that
+instance; subsequent traversals yield nothing. Restart with a fresh loader and
+iterator. A fetched page cursor is not a processed-item checkpoint: after an early
+break it may be ahead of the items actually consumed. Cross-round checkpoints and
+business retries belong to the caller. A nil loader returns nil, which must not
+be ranged.
+
+See the [executable example](iterx/example_test.go).
 
 ## Operation timelines
 
@@ -115,6 +152,32 @@ close the database. Use an explicit Manager's methods for isolation. `timeline.N
 provides the optional object-style API with explicit checkpoints using the same cache/Store protocol; `timeline/gospan` provides a
 sealed process-local backend. See [the design](docs/timeline.md) and the
 [executable example](timeline/global_example_test.go).
+
+## Development
+
+```sh
+make fix                 # Format Go packages.
+make lint                # Check formatting and run go vet without changing source.
+make test                # Run all tests, including executable examples.
+make fix LINT_FILES="iterx/loading.go iterx/loading_test.go"
+make lint LINT_FILES="iterx/loading.go iterx/loading_test.go"
+make test TEST_FILES="iterx/loading_test.go"
+make test TEST_PACKAGES=./iterx
+```
+
+File selections use space-separated paths relative to the module:
+
+- `LINT_FILES` limits formatting to the selected existing Go files; `lint` runs
+  `go vet` on their complete packages.
+- `TEST_FILES` runs tests for the complete containing packages and takes precedence
+  over `TEST_PACKAGES`.
+- Unset or empty file selections keep the defaults above. Non-Go or missing files
+  cause `vet` and tests to fall back to all packages; `fix` still only formats
+  selected existing Go files.
+
+`LINT_WORKERS` and `TEST_WORKERS` default to 4 concurrent packages;
+`GO_TEST_PARALLEL` defaults to 1 parallel test per package. Override them when
+needed. Validation uses only the Go toolchain.
 
 ## License
 
