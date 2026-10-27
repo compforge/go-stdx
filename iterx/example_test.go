@@ -59,59 +59,102 @@ func ExampleUniqueKeys() {
 		},
 		func(value record) string { return value.ID },
 	)
-	actual := iterx.NewLoadingSource(ctx,
-		func(context.Context) ([]string, bool, error) { return []string{"b", "c"}, false, nil },
-		func(_ context.Context, keys []string) (map[string]string, error) {
-			result := make(map[string]string)
-			for _, key := range keys {
-				if value, found := live[key]; found {
-					result[key] = value
-				}
-			}
-			return result, nil
-		},
-		func(value string) string { return value },
-	)
+	actual := iterx.NewMapSource(ctx, live, func(a, b string) bool { return a < b })
 
-	reconcileBatch := func(keys []string) error {
+	for keys, err := range iterx.Batch(iterx.UniqueKeys[string](db, actual), 2) {
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
 		dbValues, err := db.MGet(keys)
 		if err != nil {
-			return err
+			fmt.Println(err)
+			return
 		}
 		actualValues, err := actual.MGet(keys)
 		if err != nil {
-			return err
+			fmt.Println(err)
+			return
 		}
 		for _, key := range keys {
 			_, inDB := dbValues[key]
 			_, inActual := actualValues[key]
 			fmt.Printf("%s: db=%t actual=%t\n", key, inDB, inActual)
 		}
-		return nil
-	}
-
-	batch := make([]string, 0, 2)
-	for key, err := range iterx.UniqueKeys[string](db, actual) {
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		batch = append(batch, key)
-		if len(batch) == cap(batch) {
-			if err := reconcileBatch(batch); err != nil {
-				fmt.Println(err)
-				return
-			}
-			batch = batch[:0]
-		}
-	}
-	if len(batch) > 0 {
-		if err := reconcileBatch(batch); err != nil {
-			fmt.Println(err)
-		}
 	}
 	// Output:
 	// a: db=true actual=false
 	// b: db=true actual=true
 	// c: db=false actual=true
+}
+
+func ExampleNewLoadingSourceFromKeys() {
+	type record struct{ Name string }
+	ctx := context.Background()
+	// Enumeration can select only IDs; the independent lookup loads full records.
+	source := iterx.NewLoadingSourceFromKeys(ctx,
+		func(context.Context) ([]int, bool, error) { return []int{1, 2}, false, nil },
+		func(_ context.Context, keys []int) (map[int]record, error) {
+			values := make(map[int]record, len(keys))
+			for _, key := range keys {
+				values[key] = record{Name: fmt.Sprintf("user-%d", key)}
+			}
+			return values, nil
+		})
+	for keys, err := range iterx.Batch(source.Keys(), 2) {
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		values, err := source.MGet(keys)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		for _, key := range keys {
+			fmt.Println(key, values[key].Name)
+		}
+	}
+	// Output:
+	// 1 user-1
+	// 2 user-2
+}
+
+func ExampleNewLookupSource() {
+	// The caller already has candidate identities, so no page loader is needed.
+	source := iterx.NewLookupSource(context.Background(),
+		func(_ context.Context, keys []string) (map[string]int, error) {
+			values := make(map[string]int)
+			for _, key := range keys {
+				if key == "known" {
+					values[key] = 0
+				}
+			}
+			return values, nil
+		})
+	value, found, err := source.Get("known")
+	fmt.Println(value, found, err)
+	value, found, err = source.Get("missing")
+	fmt.Println(value, found, err)
+	// Output:
+	// 0 true <nil>
+	// 0 false <nil>
+}
+
+func ExampleNewMapSource() {
+	values := map[string]int{"b": 2, "a": 1}
+	source := iterx.NewMapSource(context.Background(), values,
+		func(a, b string) bool { return a < b })
+	values["a"] = 99
+	for key, err := range source.Keys() {
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		value, found, err := source.Get(key)
+		fmt.Println(key, value, found, err)
+	}
+	// Output:
+	// a 1 true <nil>
+	// b 2 true <nil>
 }

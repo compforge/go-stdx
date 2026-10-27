@@ -322,3 +322,217 @@ func collectKeys(t *testing.T, keys iter.Seq2[int, error]) []int {
 	}
 	return result
 }
+
+// +case:id=key_source_pages,desc=`Enumerate lightweight keys and look up unrelated full objects`,expect=`No value fetch during paging and no page advance during lookup`
+func TestLoadingSourceFromKeys(t *testing.T) {
+	pages := [][]int{{2, 2}, {}, {1}}
+	pageCalls, lookups := 0, 0
+	source := iterx.NewLoadingSourceFromKeys(t.Context(),
+		func(context.Context) ([]int, bool, error) {
+			page := pages[pageCalls]
+			pageCalls++
+			return page, pageCalls < len(pages), nil
+		},
+		func(_ context.Context, keys []int) (map[int]string, error) {
+			lookups++
+			return map[int]string{99: "outside candidates"}, nil
+		})
+	if pageCalls != 0 || lookups != 0 {
+		t.Fatal("construction performed I/O")
+	}
+	value, found, err := source.Get(99)
+	if err != nil || !found || value != "outside candidates" || pageCalls != 0 {
+		t.Fatalf("lookup=(%q,%t,%v) pages=%d", value, found, err, pageCalls)
+	}
+	if got := collectKeys(t, source.Keys()); !reflect.DeepEqual(got, []int{2, 2, 1}) {
+		t.Fatalf("keys=%v", got)
+	}
+	if got := collectKeys(t, source.Keys()); len(got) != 0 || pageCalls != 3 || lookups != 1 {
+		t.Fatalf("repeat=%v pages=%d lookups=%d", got, pageCalls, lookups)
+	}
+}
+
+func TestKeySourceEarlyBreakAndFailure(t *testing.T) {
+	failure := errors.New("page failed")
+	for _, mode := range []string{"break", "error", "cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			calls := 0
+			source := iterx.NewLoadingSourceFromKeys(ctx,
+				func(context.Context) ([]int, bool, error) {
+					calls++
+					if calls == 2 {
+						return []int{99}, true, failure
+					}
+					return []int{1, 2}, true, nil
+				}, func(context.Context, []int) (map[int]string, error) {
+					t.Fatal("enumeration looked up values")
+					return nil, nil
+				})
+			var keys []int
+			failures := 0
+			for key, err := range source.Keys() {
+				if err != nil {
+					want := failure
+					if mode == "cancel" {
+						want = context.Canceled
+					}
+					if !errors.Is(err, want) || key != 0 {
+						t.Fatalf("key=%d err=%v", key, err)
+					}
+					failures++
+					continue
+				}
+				keys = append(keys, key)
+				if mode == "break" {
+					break
+				}
+				if mode == "cancel" {
+					cancel()
+				}
+			}
+			for range source.Keys() {
+				t.Fatal("source restarted")
+			}
+			wantCalls, wantKeys, wantFailures := 1, []int{1}, 1
+			if mode == "error" {
+				wantCalls, wantKeys = 2, []int{1, 2}
+			}
+			if mode == "break" {
+				wantFailures = 0
+			}
+			if calls != wantCalls || !reflect.DeepEqual(keys, wantKeys) || failures != wantFailures {
+				t.Fatalf("calls=%d keys=%v errors=%d", calls, keys, failures)
+			}
+		})
+	}
+}
+
+func TestLookupSourceHasNoCandidates(t *testing.T) {
+	calls := 0
+	source := iterx.NewLookupSource(t.Context(), func(_ context.Context, keys []int) (map[int]string, error) {
+		calls++
+		if !reflect.DeepEqual(keys, []int{1, 0}) {
+			t.Fatalf("lookup keys=%v", keys)
+		}
+		return map[int]string{0: ""}, nil
+	})
+	if source.Keys() == nil {
+		t.Fatal("lookup-only source needs a rangeable empty iterator")
+	}
+	if keys := collectKeys(t, source.Keys()); len(keys) != 0 || calls != 0 {
+		t.Fatalf("keys=%v calls=%d", keys, calls)
+	}
+	got, err := source.MGet([]int{1, 0, 1})
+	if err != nil || !reflect.DeepEqual(got, map[int]string{0: ""}) || calls != 1 {
+		t.Fatalf("values=%v err=%v calls=%d", got, err, calls)
+	}
+}
+
+// +case:id=map_source_snapshot,desc=`Mutate the original and returned maps after construction`,expect=`Source bindings remain stable while reference-valued contents stay shared`
+func TestMapSourceSnapshotAndOrder(t *testing.T) {
+	original := map[int]string{2: "two", 0: ""}
+	source := iterx.NewMapSource(t.Context(), original, func(a, b int) bool { return a > b })
+	delete(original, 2)
+	original[0] = "changed"
+	original[1] = "new"
+	if keys := collectKeys(t, source.Keys()); !reflect.DeepEqual(keys, []int{2, 0}) {
+		t.Fatalf("keys=%v", keys)
+	}
+	got, err := source.MGet([]int{0, 1, 2, 2})
+	if err != nil || !reflect.DeepEqual(got, map[int]string{0: "", 2: "two"}) {
+		t.Fatalf("values=%v err=%v", got, err)
+	}
+	got[2] = "mutated"
+	delete(got, 0)
+	if value, found, err := source.Get(2); value != "two" || !found || err != nil {
+		t.Fatalf("lookup=(%q,%t,%v)", value, found, err)
+	}
+	if value, found, err := source.Get(0); value != "" || !found || err != nil {
+		t.Fatalf("zero=(%q,%t,%v)", value, found, err)
+	}
+	if _, found, err := source.Get(1); found || err != nil {
+		t.Fatalf("missing=(%t,%v)", found, err)
+	}
+	if keys := collectKeys(t, source.Keys()); len(keys) != 0 {
+		t.Fatalf("restarted keys=%v", keys)
+	}
+
+	value := 7
+	refs := iterx.NewMapSource(t.Context(), map[int]*int{1: &value}, nil)
+	value = 8
+	gotRef, found, err := refs.Get(1)
+	if err != nil || !found || gotRef != &value || *gotRef != 8 {
+		t.Fatalf("reference=(%v,%t,%v)", gotRef, found, err)
+	}
+}
+
+func TestMapSourceCompositeKeysAndNoOrdering(t *testing.T) {
+	type key struct{ Namespace, Name string }
+	values := map[key]string{{"a", "same"}: "a", {"b", "same"}: "b"}
+	source := iterx.NewMapSource(t.Context(), values, func(a, b key) bool { return a.Namespace < b.Namespace })
+	var keys []key
+	for k, err := range source.Keys() {
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, k)
+	}
+	if !reflect.DeepEqual(keys, []key{{"a", "same"}, {"b", "same"}}) {
+		t.Fatalf("keys=%v", keys)
+	}
+	unordered := iterx.NewMapSource(t.Context(), values, nil)
+	seen := make(map[key]bool)
+	for k, err := range unordered.Keys() {
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen[k] = true
+	}
+	if len(seen) != 2 || !seen[key{"a", "same"}] || !seen[key{"b", "same"}] {
+		t.Fatalf("keys=%v", seen)
+	}
+}
+
+func TestSourceAdaptersCancellationAndNil(t *testing.T) {
+	page := func(context.Context) ([]int, bool, error) { return nil, false, nil }
+	mget := func(context.Context, []int) (map[int]int, error) {
+		t.Fatal("cancelled source performed lookup")
+		return nil, nil
+	}
+	if iterx.NewLoadingSourceFromKeys[int, int](t.Context(), nil, mget) != nil ||
+		iterx.NewLoadingSourceFromKeys[int, int](t.Context(), page, nil) != nil ||
+		iterx.NewLookupSource[int, int](t.Context(), nil) != nil ||
+		iterx.NewMapSource[int, int](t.Context(), nil, nil) != nil {
+		t.Fatal("nil input did not return nil source")
+	}
+	empty := iterx.NewMapSource(t.Context(), map[int]int{}, nil)
+	if empty == nil {
+		t.Fatal("empty non-nil map returned nil source")
+	}
+	if keys := collectKeys(t, empty.Keys()); len(keys) != 0 {
+		t.Fatalf("empty map keys=%v", keys)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	for _, source := range []*iterx.LoadingSource[int, int]{
+		iterx.NewLoadingSourceFromKeys(ctx, page, mget),
+		iterx.NewLookupSource(ctx, mget),
+		iterx.NewMapSource(ctx, map[int]int{1: 1}, nil),
+	} {
+		failures := 0
+		for key, err := range source.Keys() {
+			if key != 0 || !errors.Is(err, context.Canceled) {
+				t.Fatalf("key=%d err=%v", key, err)
+			}
+			failures++
+		}
+		if failures != 1 {
+			t.Fatalf("errors=%d", failures)
+		}
+		if values, err := source.MGet([]int{1}); values != nil || !errors.Is(err, context.Canceled) {
+			t.Fatalf("values=%v err=%v", values, err)
+		}
+	}
+}
