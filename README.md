@@ -10,7 +10,7 @@ Subpackages mirror stdlib naming so call sites read like the standard library th
 
 | package | what | why not stdlib / a lib |
 |---|---|---|
-| `iterx` | `NewLoadingIterator` — lazy, batched loading through standard `iter.Seq2` | stdlib defines the iteration protocol; it does not load pages |
+| `iterx` | `NewLoadingIterator`, `NewLoadingSource`, `UniqueKeys` — lazy pages, keyed batch lookup and identity deduplication | stdlib defines the iteration protocol; it does not load or look up external data |
 | `slicesx` | `Uniq`, `UniqBy` — first-occurrence, order-preserving dedup | the "seen map" loop everyone re-writes; stdlib's `slices` has no transform family |
 | `stringsx` | `Truncate` / `TruncateEllipsis` — byte-budget cuts; `FirstNonBlank`; `SplitAndTrim` | the log-truncation and human-written-list helpers every service re-writes (`cmp.Or` covers non-empty, not non-blank) |
 | `osx` | `EnvStr` / `EnvBool` / `EnvInt` / `EnvInt64` / `EnvDuration` — typed env lookups with defaults; `WriteFileAtomic` — temp+rename write | config-from-env boilerplate in every service; `os.WriteFile` can leave readers a torn file |
@@ -80,6 +80,58 @@ business retries belong to the caller. A nil loader returns nil, which must not
 be ranged.
 
 See the [executable example](iterx/example_test.go).
+
+## Loading sources and unique keys
+
+A `LoadingSource[K, V]` binds three callbacks: a candidate page loader, a batch
+lookup and an identity function. Sources can have different value types while
+sharing the same key type and identity semantics:
+
+```go
+db := iterx.NewLoadingSource(ctx, dbPage, dbMGet, dbKey)
+actual := iterx.NewLoadingSource(ctx, runtimePage, runtimeMGet, runtimeKey)
+keys := iterx.UniqueKeys[string](db, actual)
+```
+
+- `page`: `func(context.Context) ([]V, bool, error)`, the existing `PageFunc[V]`.
+- `mget`: `func(context.Context, []K) (map[K]V, error)`.
+- `key`: `func(V) K`.
+
+Construction performs no I/O. All callbacks are required; a nil callback returns
+nil. The non-nil construction context is used for both enumeration and lookup.
+`source.Keys()` uses `LoadingIterator` to extract keys lazily, retaining duplicates
+and order. All calls share one single-use traversal; after completion or early
+exit, subsequent traversals yield nothing. Create a new source and fresh page
+state to scan again. Sources must not be used concurrently.
+
+`source.MGet(keys)` deduplicates the request in first-occurrence order and calls
+the batch loader independently of enumeration. Empty input performs no I/O.
+Candidate filters belong to `page`; `mget` must resolve identities independently
+of those filters. In particular, an object outside the candidate phase can still
+exist. The loader must return only requested keys, with each value's extracted
+key equal to its map key. A missing key means confirmed absence only on a
+successful lookup. Errors, including cancellation, discard partial results.
+`source.Get(key)` wraps a single-key lookup and returns `(value, found, error)`;
+a present zero value is distinguishable from absence.
+
+Lookups do not advance paging, cache values or automatically accumulate requests.
+The callback may use an existing application cache. Collect unique keys into
+caller-sized batches and use `MGet` on each source to avoid one lookup per key;
+[the executable example](iterx/example_test.go) demonstrates this, including the
+final partial batch. Repeated `Get` calls still perform individual lookups.
+
+`UniqueKeys` consumes any `KeySource[K]` (`Keys() iter.Seq2[K, error]`) in argument
+order and emits each identity only on its first occurrence. It is a single-use,
+non-concurrent iterator. It never calls `MGet`, sorts or interleaves sources.
+Early exit leaves later sources unstarted. A source error is yielded once and
+ends the traversal; earlier outputs and caller actions are not rolled back.
+Cancellation is supplied by each source. Nil sources and nil iterators are
+skipped; zero arguments return nil, which must not be ranged directly.
+
+Loading retains one page per source; deduplication additionally retains
+`O(unique keys)` identities. These APIs do not promise a cross-source snapshot,
+perform reconciliation, or maintain processing checkpoints. Source identity
+mapping, batch sizing, action safety and retry policy remain with the caller.
 
 ## Operation timelines
 
