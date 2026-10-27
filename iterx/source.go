@@ -3,6 +3,8 @@ package iterx
 import (
 	"context"
 	"iter"
+	"maps"
+	"sort"
 
 	"github.com/compforge/go-stdx/slicesx"
 )
@@ -15,22 +17,21 @@ type KeyFunc[K comparable, V any] func(V) K
 // filters and cursor. An omitted key means confirmed absence only when err is
 // nil. On error, LoadingSource discards the entire result.
 //
-// The returned map must contain only requested keys, and each value's KeyFunc
-// must equal its map key. Implementations must honor ctx and release per-query
-// resources before returning.
+// The returned map must contain only requested keys and use the same identity
+// as candidate enumeration (and KeyFunc, when supplied). Implementations must
+// honor ctx and release per-query resources before returning.
 type MGetFunc[K comparable, V any] func(ctx context.Context, keys []K) (map[K]V, error)
 
 // LoadingSource combines a single-use candidate traversal with independent
-// batch lookups. It does not cache objects, retry, or guarantee a snapshot
-// across reads. It must not be used concurrently.
+// batch lookups. It adds no object cache, retry, or snapshot guarantee across
+// reads; those properties belong to the loaders. It must not be used concurrently.
 //
 // Construct a new source with fresh page state for each traversal. Get and MGet
 // remain usable before, during and after traversal while ctx is active.
 type LoadingSource[K comparable, V any] struct {
-	ctx   context.Context
-	items LoadingIterator[V]
-	mget  MGetFunc[K, V]
-	key   KeyFunc[K, V]
+	ctx  context.Context
+	keys LoadingIterator[K]
+	mget MGetFunc[K, V]
 }
 
 // NewLoadingSource binds the loaders without performing I/O. ctx must be
@@ -41,15 +42,80 @@ func NewLoadingSource[K comparable, V any](ctx context.Context, page PageFunc[V]
 	if page == nil || mget == nil || key == nil {
 		return nil
 	}
-	return &LoadingSource[K, V]{
-		ctx:   ctx,
-		items: NewLoadingIterator(ctx, page),
-		mget:  mget,
-		key:   key,
+	items := NewLoadingIterator(ctx, page)
+	keys := func(yield func(K, error) bool) {
+		for value, err := range items {
+			if err != nil {
+				var zero K
+				yield(zero, err)
+				return
+			}
+			if !yield(key(value), nil) {
+				return
+			}
+		}
 	}
+	return &LoadingSource[K, V]{ctx: ctx, keys: keys, mget: mget}
 }
 
-// Keys lazily extracts candidate identities, preserving duplicates and order.
+// NewLoadingSourceFromKeys binds a key page loader and an independent batch
+// lookup without fetching or constructing values during enumeration. ctx must
+// be non-nil. Either nil callback returns nil. Use NewLookupSource when no
+// candidate traversal is needed.
+// +spec=`Key-only enumeration does not load values or advance through lookups`
+func NewLoadingSourceFromKeys[K comparable, V any](ctx context.Context, page PageFunc[K], mget MGetFunc[K, V]) *LoadingSource[K, V] {
+	if page == nil || mget == nil {
+		return nil
+	}
+	return &LoadingSource[K, V]{ctx: ctx, keys: NewLoadingIterator(ctx, page), mget: mget}
+}
+
+// NewLookupSource binds only Get/MGet. Keys returns an empty, non-nil iterator
+// that still reports context cancellation. ctx must be non-nil; a nil mget
+// returns nil. This source can resolve keys enumerated by another source.
+func NewLookupSource[K comparable, V any](ctx context.Context, mget MGetFunc[K, V]) *LoadingSource[K, V] {
+	return NewLoadingSourceFromKeys(ctx,
+		func(context.Context) ([]K, bool, error) { return nil, false, nil }, mget)
+}
+
+// NewMapSource takes a shallow snapshot of values at construction. Changes to
+// the input map or returned result maps do not alter its bindings; pointers,
+// slices and other references inside keys/values remain shared. The input must
+// not be mutated concurrently with construction.
+//
+// Map keys are authoritative identities. A non-nil less orders enumeration and
+// must define a strict weak ordering; use a total order when deterministic
+// traversal is required. With nil less, order is unspecified. A nil values map
+// returns nil; an empty non-nil map returns an empty source. ctx must be non-nil.
+// Construction performs O(n) copying and, with less, O(n log n) sorting. This
+// adapts an already loaded map; it does not provide lazy external data loading.
+// +spec=`Map sources preserve construction-time bindings and isolate returned maps`
+func NewMapSource[K comparable, V any](ctx context.Context, values map[K]V, less func(K, K) bool) *LoadingSource[K, V] {
+	if values == nil {
+		return nil
+	}
+	snapshot := maps.Clone(values)
+	keys := make([]K, 0, len(snapshot))
+	for key := range snapshot {
+		keys = append(keys, key)
+	}
+	if less != nil {
+		sort.Slice(keys, func(i, j int) bool { return less(keys[i], keys[j]) })
+	}
+	return NewLoadingSourceFromKeys(ctx,
+		func(context.Context) ([]K, bool, error) { return keys, false, nil },
+		func(_ context.Context, keys []K) (map[K]V, error) {
+			result := make(map[K]V, len(keys))
+			for _, key := range keys {
+				if value, found := snapshot[key]; found {
+					result[key] = value
+				}
+			}
+			return result, nil
+		})
+}
+
+// Keys lazily enumerates candidate identities, preserving duplicates and order.
 // All calls share the source's single-use traversal: after it completes or is
 // stopped early, further traversals yield nothing. A nil source returns nil,
 // which must not be ranged directly.
@@ -57,23 +123,12 @@ func (s *LoadingSource[K, V]) Keys() iter.Seq2[K, error] {
 	if s == nil {
 		return nil
 	}
-	return func(yield func(K, error) bool) {
-		for value, err := range s.items {
-			if err != nil {
-				var zero K
-				yield(zero, err)
-				return
-			}
-			if !yield(s.key(value), nil) {
-				return
-			}
-		}
-	}
+	return s.keys
 }
 
 // MGet deduplicates keys in first-occurrence order before invoking the loader.
 // Empty input returns nil without I/O. Missing result keys mean absence; a
-// loader or context error returns no partial result. No results are cached.
+// loader or context error returns no partial result. LoadingSource itself does not cache results.
 // +spec=`Batch lookup preserves absence versus failure and does not return partial results on error`
 func (s *LoadingSource[K, V]) MGet(keys []K) (map[K]V, error) {
 	if err := s.ctx.Err(); err != nil {

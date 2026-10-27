@@ -10,7 +10,7 @@ Subpackages mirror stdlib naming so call sites read like the standard library th
 
 | package | what | why not stdlib / a lib |
 |---|---|---|
-| `iterx` | `NewLoadingIterator`, `NewLoadingSource`, `UniqueKeys` — lazy pages, keyed batch lookup and identity deduplication | stdlib defines the iteration protocol; it does not load or look up external data |
+| `iterx` | `NewLoadingIterator`, `Batch`, `LoadingSource`, `UniqueKeys` — lazy pages, stream batching, keyed lookup and identity deduplication | stdlib defines the iteration protocol; it does not load or look up external data |
 | `slicesx` | `Uniq`, `UniqBy` — first-occurrence, order-preserving dedup | the "seen map" loop everyone re-writes; stdlib's `slices` has no transform family |
 | `stringsx` | `Truncate` / `TruncateEllipsis` — byte-budget cuts; `FirstNonBlank`; `SplitAndTrim` | the log-truncation and human-written-list helpers every service re-writes (`cmp.Or` covers non-empty, not non-blank) |
 | `osx` | `EnvStr` / `EnvBool` / `EnvInt` / `EnvInt64` / `EnvDuration` — typed env lookups with defaults; `WriteFileAtomic` — temp+rename write | config-from-env boilerplate in every service; `os.WriteFile` can leave readers a torn file |
@@ -83,42 +83,84 @@ See the [executable example](iterx/example_test.go).
 
 ## Loading sources and unique keys
 
-A `LoadingSource[K, V]` binds three callbacks: a candidate page loader, a batch
-lookup and an identity function. Sources can have different value types while
-sharing the same key type and identity semantics:
+A `LoadingSource[K, V]` combines candidate enumeration with independent key
+lookups. Choose the constructor that matches the data you already have:
+
+| Constructor | Input | Enumeration |
+|---|---|---|
+| `NewLoadingSource(ctx, page, mget, key)` | Value pages, batch lookup, identity function | Extract keys lazily with `key(V) K` |
+| `NewLoadingSourceFromKeys(ctx, page, mget)` | Key pages and batch lookup | Yield keys without loading values |
+| `NewLookupSource(ctx, mget)` | Batch lookup only | Empty, non-nil iterator |
+| `NewMapSource(ctx, values, less)` | An already loaded `map[K]V`, optional key comparator | Keys from a shallow snapshot |
+
+Page loaders have signature `func(context.Context) ([]T, bool, error)`; `T` is
+`V` for value pages and `K` for key pages. Batch lookup has signature
+`func(context.Context, []K) (map[K]V, error)`. Required nil callbacks return nil;
+`NewMapSource` returns nil for a nil map, but a valid empty source for an empty
+non-nil map. Nil sources must not be ranged directly through `Keys()`.
+All constructors require a non-nil context and perform no external I/O.
+
+Sources can have different value types while sharing key identity semantics:
 
 ```go
-db := iterx.NewLoadingSource(ctx, dbPage, dbMGet, dbKey)
-actual := iterx.NewLoadingSource(ctx, runtimePage, runtimeMGet, runtimeKey)
-keys := iterx.UniqueKeys[string](db, actual)
+db := iterx.NewLoadingSourceFromKeys(ctx, dbKeyPage, dbMGet)
+actual := iterx.NewMapSource(ctx, runtimeSnapshot, func(a, b string) bool { return a < b })
+for keys, err := range iterx.Batch(iterx.UniqueKeys[string](db, actual), 100) {
+    if err != nil {
+        return err
+    }
+    dbValues, err := db.MGet(keys)
+    if err != nil {
+        return err
+    }
+    actualValues, err := actual.MGet(keys)
+    if err != nil {
+        return err
+    }
+    reconcile(keys, dbValues, actualValues)
+}
 ```
 
-- `page`: `func(context.Context) ([]V, bool, error)`, the existing `PageFunc[V]`.
-- `mget`: `func(context.Context, []K) (map[K]V, error)`.
-- `key`: `func(V) K`.
-
-Construction performs no I/O. All callbacks are required; a nil callback returns
-nil. The non-nil construction context is used for both enumeration and lookup.
-`source.Keys()` uses `LoadingIterator` to extract keys lazily, retaining duplicates
-and order. All calls share one single-use traversal; after completion or early
-exit, subsequent traversals yield nothing. Create a new source and fresh page
-state to scan again. Sources must not be used concurrently.
+Use `db.Keys()` or `actual.Keys()` directly when only one side supplies candidates.
+`source.Keys()` retains duplicates and order. All calls share one single-use
+traversal; after completion or early exit, subsequent traversals yield nothing.
+Create a new source and fresh page state to scan again. Sources must not be used
+concurrently. Get/MGet remain usable before, during and after enumeration while
+the construction context is active. Even a lookup-only source's empty traversal
+reports context cancellation.
 
 `source.MGet(keys)` deduplicates the request in first-occurrence order and calls
 the batch loader independently of enumeration. Empty input performs no I/O.
 Candidate filters belong to `page`; `mget` must resolve identities independently
 of those filters. In particular, an object outside the candidate phase can still
-exist. The loader must return only requested keys, with each value's extracted
-key equal to its map key. A missing key means confirmed absence only on a
-successful lookup. Errors, including cancellation, discard partial results.
-`source.Get(key)` wraps a single-key lookup and returns `(value, found, error)`;
-a present zero value is distinguishable from absence.
+exist. The loader must return only requested keys with the same identity semantics
+as enumeration and `key`, when supplied. A missing key means confirmed absence
+only on a successful lookup. Errors, including cancellation, discard partial
+results. `source.Get(key)` returns `(value, found, error)`; a present zero value
+is distinguishable from absence.
 
-Lookups do not advance paging, cache values or automatically accumulate requests.
-The callback may use an existing application cache. Collect unique keys into
-caller-sized batches and use `MGet` on each source to avoid one lookup per key;
-[the executable example](iterx/example_test.go) demonstrates this, including the
-final partial batch. Repeated `Get` calls still perform individual lookups.
+LoadingSource itself adds no cache or request accumulation. Repeated `Get` calls
+invoke the loader individually. Use `Batch` and `MGet` to avoid one lookup per key;
+[the executable examples](iterx/example_test.go) show each source constructor and
+batch lookups across different value types.
+
+`NewMapSource` copies the input map at construction. Subsequent changes to the
+original map or returned result maps cannot alter source bindings; referenced
+objects, slices and pointers remain shared. Do not mutate the input concurrently
+with construction. Map keys are authoritative. A non-nil `less` must define a
+strict weak ordering; use a total order for deterministic traversal. With nil
+`less`, key order is unspecified. This adapter costs O(n) copying plus O(n log n)
+when sorting; it does not make an already loaded map lazy or refresh its values.
+
+`Batch(items, size)` accepts any `iter.Seq2[T, error]`, preserves order and duplicates,
+and loads synchronously without prefetch. Every yielded batch has independent
+slice storage; normal completion yields the final nonempty partial batch. An
+input error discards the pending incomplete batch, yields `(nil, err)` once and
+stops; earlier batches are not rolled back. Its iterator is single-use, including
+after early exit, and must not be traversed concurrently. Cancellation comes from
+the input iterator. A nonpositive size panics; otherwise nil input returns nil,
+which must not be ranged directly. For an already loaded slice, use standard
+library `slices.Chunk` instead.
 
 `UniqueKeys` consumes any `KeySource[K]` (`Keys() iter.Seq2[K, error]`) in argument
 order and emits each identity only on its first occurrence. It is a single-use,

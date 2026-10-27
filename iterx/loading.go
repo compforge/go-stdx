@@ -71,3 +71,46 @@ func NewLoadingIterator[T any](ctx context.Context, page PageFunc[T]) LoadingIte
 		}
 	}
 }
+
+// Batch lazily groups items into slices of at most size, preserving order and
+// duplicates. It yields a final nonempty partial batch on normal exhaustion.
+// An upstream error discards the incomplete batch, yields (nil, err) once and
+// stops. Previously yielded batches remain valid and are not rolled back.
+//
+// Each batch owns its backing array and can be retained or modified by callers.
+// The iterator is single-use, synchronous and not safe for concurrent traversal;
+// stopping never reads further items. Cancellation belongs to the input iterator.
+// Batch panics if size < 1; with a valid size, nil input returns nil.
+// +spec=`Batch does not prefetch, reuse yielded buffers, or expose partial batches on error`
+func Batch[T any](items iter.Seq2[T, error], size int) iter.Seq2[[]T, error] {
+	if size < 1 {
+		panic("iterx.Batch: size must be positive")
+	}
+	if items == nil {
+		return nil
+	}
+	started := false
+	return func(yield func([]T, error) bool) {
+		if started {
+			return
+		}
+		started = true
+		batch := make([]T, 0, size)
+		for item, err := range items {
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			batch = append(batch, item)
+			if len(batch) == size {
+				if !yield(batch, nil) {
+					return
+				}
+				batch = make([]T, 0, size)
+			}
+		}
+		if len(batch) > 0 {
+			yield(batch[:len(batch):len(batch)], nil)
+		}
+	}
+}
