@@ -1,4 +1,4 @@
-// Package iterx extends standard iterators with lazy page loading.
+// Package iterx extends standard iterators with lazy page loading and keyed sources.
 package iterx
 
 import (
